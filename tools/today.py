@@ -1,6 +1,5 @@
 """예시 도구: 오늘 날짜 (Asia/Seoul)."""
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
 from tools import tool
 
@@ -14,7 +13,7 @@ def get_today() -> str:
     Returns:
         예: "2026-11-12 (Thu) 10:30 KST"
     """
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    now = datetime.now(timezone(timedelta(hours=9)))
     return now.strftime("%Y-%m-%d (%a) %H:%M KST")
 
 
