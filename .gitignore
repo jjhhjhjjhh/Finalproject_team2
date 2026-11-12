@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+outputs/
+mcp_servers.log
 logs/
 .DS_Store
 .vscode/

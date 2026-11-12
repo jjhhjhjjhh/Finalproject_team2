@@ -1,4 +1,4 @@
-# QA AI Agent
+# [팀 이름] — QA AI Agent
 
 > Language, AI, and Robots (2026-2) 기말 프로젝트
 > 텍스트로 주어진 물음에 답하는 AI Agent
@@ -94,29 +94,31 @@
 
 ## Tech Stack
 
-> 추가 예정
+> 수업 Week 4 MCP 실습 코드 기준 — 확정 시 갱신
 
-- LLM: **로컬 모델만 사용** — 공통 제공 모델 `Qwen3.8-27B` 기준 (아래 [모델 사용 규정](#모델-사용-규정) 참고). 사용할 모델은 미정
-- 초기 레포 템플릿은 Python 기준으로 만들어져 있음 (변경 가능)
+| 분류 | 내용 |
+|---|---|
+| Language | Python 3.10 이상 |
+| Tool 연결 | MCP (Model Context Protocol) — `mcp>=1.10,<2`, `mcp-server-fetch` |
+| LLM 실행 | Ollama (로컬) |
+| 실습 코드 모델 | `qwen3-vl:2b-instruct` |
+| 대회용 모델 | 미정 — `Qwen3.8-27B` 이하 로컬 모델만 가능 ([모델 사용 규정](#모델-사용-규정)) |
 
 ## Repository Structure
 
-> 현재 초기 템플릿 기준 — 구조 확정 시 갱신
+> 수업 실습 코드 기준 — 구조 확정 시 갱신
 
 ```
 .
-├── agent/            # 에이전트 본체 (미구현)
-│   └── main.py
-├── tools/            # 도구 모음 — 파일 하나 = 도구 하나
-│   ├── __init__.py   #   도구 자동 등록
-│   ├── _template.py  #   도구 템플릿
-│   └── today.py      #   예시 도구
+├── agent.py          # MCP 서버에 연결해 도구를 쓰는 Agent (Host + Client)
+├── my_server.py      # 직접 만든 MCP 서버 — 도구는 여기에 추가
 ├── eval/             # 평가 문제셋
 ├── docs/             # 계획, 회의록
 ├── .github/          # 이슈·PR 템플릿
-├── requirements.txt
-└── .env.example
+└── requirements.txt
 ```
+
+`agent.py`, `my_server.py`는 수업 Week 4 MCP 실습 코드를 그대로 가져온 것.
 
 ## Development Roadmap
 
@@ -130,15 +132,48 @@
 
 ## Installation and Usage
 
-> 추가 예정
+### 준비
 
-현재 템플릿에서 동작하는 명령:
+Python 3.10 이상, Ollama 앱 실행 + 모델 설치 필요.
+
+**macOS / Linux**
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+ollama pull qwen3-vl:2b-instruct
+```
+
+**Windows (PowerShell)**
+```powershell
+py -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+ollama pull qwen3-vl:2b-instruct
+```
+
+### 실행
+
+macOS / Linux는 `.venv/bin/python`, Windows는 `.\.venv\Scripts\python.exe`
 
 ```bash
-pip install -r requirements.txt
-python -m agent.main --list-tools   # 등록된 도구 확인
-python -m tools.today               # 도구 단독 테스트
+.venv/bin/python agent.py --tools                                  # 연결된 도구 목록
+.venv/bin/python agent.py "위키백과에서 서울대학교를 찾아서 두 문장으로 알려줘"   # 질문하기
 ```
+
+### 도구 추가
+
+`my_server.py`에 `@mcp.tool()`을 붙인 함수를 추가하면 새 도구가 된다. 함수 설명(docstring)이 모델에게 전달된다.
+
+```python
+@mcp.tool()
+def add(a: float, b: float) -> float:
+    """두 수를 더한다."""
+    return a + b
+```
+
+추가 후 `agent.py --tools`로 목록에 나오는지 확인.
+다른 MCP 서버를 연결하려면 `agent.py`의 `SERVERS`에 등록한다.
+
+> `mcp`는 2 미만으로 고정 — 공식 `mcp-server-fetch` 서버가 아직 mcp 2.0과 맞지 않음
 
 ## Documentation
 
@@ -147,7 +182,6 @@ python -m tools.today               # 도구 단독 테스트
 | [docs/PLAN.md](docs/PLAN.md) | 프로젝트 계획 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 시스템 설계 (추가 예정) |
 | [docs/meetings/](docs/meetings/) | 회의록 |
-| [tools/README.md](tools/README.md) | 도구 추가 방법 |
 | [eval/README.md](eval/README.md) | 평가셋 형식 |
 
 ## Expected Output
