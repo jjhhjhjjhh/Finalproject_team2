@@ -1,4 +1,4 @@
-# [팀 이름] — QA AI Agent
+# QA AI Agent
 
 > Language, AI, and Robots (2026-2) 기말 프로젝트
 > 텍스트로 주어진 물음에 답하는 AI Agent
