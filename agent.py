@@ -17,15 +17,81 @@ from mcp.client.stdio import stdio_client
 MODEL = "qwen3-vl:2b-instruct"
 HERE = Path(__file__).parent
 
+def load_image(image_path: str) -> bytes:
+    """이미지 파일을 읽어 bytes 형태로 반환한다."""
+
+    path = Path(image_path)
+
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"이미지 파일을 찾을 수 없습니다: {image_path}"
+        )
+
+    if path.suffix.lower() not in [".png", ".jpg", ".jpeg", ".webp"]:
+        raise ValueError(
+            "지원하지 않는 이미지 형식입니다."
+        )
+
+    return path.read_bytes()
+
 # 연결할 MCP 서버: 이름 → 실행 방법
 SERVERS = {
     "my-tools": StdioServerParameters(command=sys.executable, args=[str(HERE / "my_server.py")]),   # 직접 만든 서버
     "fetch": StdioServerParameters(command=sys.executable, args=["-m", "mcp_server_fetch"]),        # 공식 서버
 }
 
-SYSTEM = ("당신은 도구를 사용해 일을 처리하는 도우미입니다. 필요하면 도구를 호출하고, 결과를 보고 한국어로 짧게 답하세요. "
-          "엑셀 표를 만들 때는 create_excel의 csv_text에 첫 줄을 열 이름으로 하는 쉼표 구분 표를 넣으세요.")
-MAX_TURNS = 5
+SYSTEM = (
+"""
+당신은 다양한 문제를 해결하는 범용 AI 에이전트입니다.
+사용자의 질문을 분석하고, 필요한 경우 제공된 MCP 도구를 활용하여 정확한 답변을 생성하세요.
+
+[기본 원칙]
+1. 사용자의 질문과 요구 조건을 정확히 파악합니다.
+2. 자체 지식만으로 해결할 수 있는 문제는 직접 해결합니다.
+3. 최신 정보나 외부 사실 확인이 필요한 경우 웹 검색 도구를 활용합니다.
+4. 복잡한 수학 계산이 필요한 경우 Python 실행 도구를 활용합니다.
+5. 도구 실행 결과를 검토하고, 필요한 경우 추가 도구를 호출합니다.
+6. 확인되지 않은 정보를 사실처럼 제시하지 않습니다.
+7. 최종 답변은 한국어로 작성합니다.
+
+[이미지 분석]
+1. 이미지가 제공되면 이미지의 내용을 먼저 분석합니다.
+2. 이미지 속 문자, 건물, 사물, 도형 및 주변 환경의 특징을 파악합니다.
+3. 이미지 속 장소나 사물을 식별해야 한다면 시각적 특징을 바탕으로 추론합니다.
+4. 정확한 식별이 필요한 경우 웹 검색으로 추가 검증합니다.
+5. 불확실한 경우 여러 후보를 비교하고 근거를 확인합니다.
+
+[웹 검색]
+1. 최신 정보, 가격, 일정, 인물 정보 등은 웹 검색을 활용합니다.
+2. 가능한 경우 공식 홈페이지와 신뢰할 수 있는 자료를 우선합니다.
+3. 검색 결과가 부족하면 검색어를 수정해 추가 검색합니다.
+4. 서로 다른 출처의 정보가 충돌하면 신뢰성과 날짜를 비교합니다.
+
+[수학 계산]
+1. 복잡하거나 정확한 수치 계산이 필요한 경우 Python 도구를 사용합니다.
+2. 계산 결과가 문제 조건을 만족하는지 확인합니다.
+3. 오류가 발생하면 원인을 분석하고 수정합니다.
+
+[문서 처리]
+1. 사용자의 질문을 해결하는 데 문서 자료가 필요하면 웹 검색을 수행합니다.
+2. 검색 결과에서 PDF, Word, Excel, CSV, TXT 문서의 다운로드 URL을 발견하면 download_document 도구를 사용할 수 있습니다.
+3. 문서를 다운로드한 뒤 read_document 도구로 내용을 확인합니다.
+4. 문서의 내용을 분석하여 질문에 답합니다.
+5. 문서의 일부만 읽은 경우 전체 내용을 확인한 것처럼 답하지 않습니다.
+6. 가능하면 문서의 제목, 출처 URL, 작성 시점을 확인합니다.
+7. 문서에 근거한 답변에는 출처를 표시합니다.
+
+[최종 답변]
+1. 질문에 대한 답을 명확하게 제시합니다.
+2. 필요한 경우 풀이 과정과 판단 근거를 설명합니다.
+3. 외부 정보를 활용했다면 출처를 제시합니다.
+4. 정보가 부족한 경우 임의로 추측하지 않습니다.
+
+
+"""
+)
+
+MAX_TURNS = 12
 
 
 async def connect(stack):
@@ -66,13 +132,22 @@ def check_ollama():
     return True
 
 
-async def ask(question):
+
+async def ask(question, image_path=None):
     if not check_ollama():
         return
     async with AsyncExitStack() as stack:
         tools = await connect(stack)
         schemas = [to_ollama(tool) for _, _, tool in tools.values()]
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}]
+
+        messages = [{"role": "system", "content": SYSTEM}]
+        user_message = {"role": "user","content": question}
+
+        # 이미지가 있으면 추가
+        if image_path is not None:
+            user_message["images"] = [load_image(image_path)]
+        messages.append(user_message)
+        
         print(f"[QUESTION] {question}")
         for turn in range(1, MAX_TURNS + 1):
             last = turn == MAX_TURNS                       # 마지막 차례에는 도구 없이 답하게 한다
@@ -100,11 +175,31 @@ async def ask(question):
 
 
 if __name__ == "__main__":
+
     if sys.version_info < (3, 10):
-        sys.exit("[ERROR] Python 3.10 이상이 필요합니다. 현재: " + sys.version.split()[0])
+        sys.exit("[ERROR] Python 3.10 이상이 필요합니다.")
+
     if len(sys.argv) < 2:
         print(__doc__)
+
     elif sys.argv[1] == "--tools":
         asyncio.run(show_tools())
+
+    elif sys.argv[1] == "--image":
+
+        if len(sys.argv) < 3:
+            print("사용법: python agent.py --image 이미지경로 질문")
+
+        else:
+            image_path = sys.argv[2]
+
+            question = (
+                " ".join(sys.argv[3:])
+                if len(sys.argv) > 3
+                else "이 이미지를 분석해 줘."
+            )
+
+            asyncio.run(ask(question, image_path))
+
     else:
         asyncio.run(ask(" ".join(sys.argv[1:])))
