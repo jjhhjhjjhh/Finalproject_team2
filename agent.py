@@ -92,6 +92,7 @@ SYSTEM = (
 )
 
 MAX_TURNS = 12
+MAX_TOOL_RESULT = 15000   # 도구 결과를 LLM에게 넘길 때 최대 글자 수
 
 
 async def connect(stack):
@@ -171,7 +172,7 @@ async def ask(question, image_path=None):
                     except Exception as exc:
                         text = f"도구 실행 오류: {exc}"
                 print(f"[TOOL RESULT] {text[:300]}{' ...' if len(text) > 300 else ''}")
-                messages.append({"role": "tool", "tool_name": name, "content": text[:4000]})
+                messages.append({"role": "tool", "tool_name": name, "content": text[:MAX_TOOL_RESULT]})
 
 
 if __name__ == "__main__":
