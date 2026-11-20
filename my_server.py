@@ -217,7 +217,6 @@ def web_search(query: str) -> str:
     인터넷에서 정보를 검색한다.
     """
 
-    #TAVILY_API_KEY 부분에 API키를 입력
     api_key = os.getenv("TAVILY_API_KEY")
 
     if not api_key:

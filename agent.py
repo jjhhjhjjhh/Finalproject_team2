@@ -3,6 +3,7 @@
 사용법
   python agent.py --tools          연결된 MCP 도구 목록 보기
   python agent.py "질문"            Agent에게 질문하기
+  python agent.py --image 첫번째.png --image 두번째.jpg "두 이미지를 비교해 줘."
 """
 import asyncio
 import json
@@ -14,7 +15,7 @@ import ollama
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-MODEL = "qwen3-vl:2b-instruct"
+MODEL = "qwen3.8:27b"
 HERE = Path(__file__).parent
 
 def load_image(image_path: str) -> bytes:
@@ -35,9 +36,18 @@ def load_image(image_path: str) -> bytes:
     return path.read_bytes()
 
 # 연결할 MCP 서버: 이름 → 실행 방법
+"""
 SERVERS = {
     "my-tools": StdioServerParameters(command=sys.executable, args=[str(HERE / "my_server.py")]),   # 직접 만든 서버
     "fetch": StdioServerParameters(command=sys.executable, args=["-m", "mcp_server_fetch"]),        # 공식 서버
+}
+"""
+
+SERVERS = {
+    "my-tools": StdioServerParameters(
+        command=sys.executable,
+        args=[str(HERE / "my_server.py")]
+    ),
 }
 
 SYSTEM = (
@@ -92,6 +102,7 @@ SYSTEM = (
 )
 
 MAX_TURNS = 12
+NUM_CTX = 16384
 MAX_TOOL_RESULT = 15000   # 도구 결과를 LLM에게 넘길 때 최대 글자 수
 
 
@@ -134,7 +145,7 @@ def check_ollama():
 
 
 
-async def ask(question, image_path=None):
+async def ask(question, image_path=None, *, image_paths=()):
     if not check_ollama():
         return
     async with AsyncExitStack() as stack:
@@ -145,20 +156,48 @@ async def ask(question, image_path=None):
         user_message = {"role": "user","content": question}
 
         # 이미지가 있으면 추가
-        if image_path is not None:
-            user_message["images"] = [load_image(image_path)]
+        paths = (image_path, *image_paths) if image_path is not None else image_paths
+        if paths:
+            user_message["images"] = [load_image(path) for path in paths]
         messages.append(user_message)
         
         print(f"[QUESTION] {question}")
         for turn in range(1, MAX_TURNS + 1):
             last = turn == MAX_TURNS                       # 마지막 차례에는 도구 없이 답하게 한다
-            response = ollama.chat(model=MODEL, messages=messages, tools=None if last else schemas,
-                                   options={"temperature": 0.3})
+            try:
+                response = ollama.chat(
+                    model=MODEL,
+                    messages=messages,
+                    tools=None if last else schemas,
+                    options={"temperature": 0.3, "num_ctx": NUM_CTX},
+                )
+            except ollama.ResponseError as exc:
+                if exc.status_code != 500 or "no user query found in messages" not in str(exc) or turn == 1:
+                    raise
+                # 원래 질문과 마지막 도구 결과를 담아 최종 답변을 요청한다.
+                recent_results = messages[tool_result_start:]
+                excerpt_limit = max(1, 4000 // len(recent_results))
+                excerpts = "\n\n".join(
+                    f"{result['tool_name']}: {result['content'][:excerpt_limit]}"
+                    for result in recent_results
+                )
+                retry_message = {
+                    **user_message,
+                    "content": f"{question}\n\n아래 도구 결과를 참고해 답변하세요.\n{excerpts}",
+                }
+                response = ollama.chat(
+                    model=MODEL,
+                    messages=[messages[0], retry_message],
+                    options={"temperature": 0.3, "num_ctx": NUM_CTX},
+                )
+                print(f"[ANSWER] {response.message.content}")
+                return
             message = response.message
             messages.append(message)
             if not message.tool_calls:
                 print(f"[ANSWER] {message.content}")
                 return
+            tool_result_start = len(messages)
             for call in message.tool_calls:                # tools/call
                 name, args = call.function.name, dict(call.function.arguments)
                 server_name = tools[name][0] if name in tools else "?"
@@ -187,20 +226,20 @@ if __name__ == "__main__":
         asyncio.run(show_tools())
 
     elif sys.argv[1] == "--image":
-
-        if len(sys.argv) < 3:
-            print("사용법: python agent.py --image 이미지경로 질문")
-
+        args = iter(sys.argv[1:])
+        image_paths = []
+        for arg in args:
+            if arg != "--image":
+                question = " ".join([arg, *args])
+                break
+            path = next(args, None)
+            if path is None or path == "--image":
+                sys.exit("사용법: python agent.py --image 이미지경로 [--image 이미지경로] [질문]")
+            image_paths.append(path)
         else:
-            image_path = sys.argv[2]
+            question = "첨부한 이미지를 분석해 줘."
 
-            question = (
-                " ".join(sys.argv[3:])
-                if len(sys.argv) > 3
-                else "이 이미지를 분석해 줘."
-            )
-
-            asyncio.run(ask(question, image_path))
+        asyncio.run(ask(question, image_paths=image_paths))
 
     else:
         asyncio.run(ask(" ".join(sys.argv[1:])))
