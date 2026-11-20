@@ -157,6 +157,7 @@ macOS / Linux는 `.venv/bin/python`, Windows는 `.\.venv\Scripts\python.exe`
 ```bash
 .venv/bin/python agent.py --tools                                  # 연결된 도구 목록
 .venv/bin/python agent.py "위키백과에서 서울대학교를 찾아서 두 문장으로 알려줘"   # 질문하기
+.venv/bin/python agent.py --image "이미지 파일 디렉토리\이미지.jpg" "이 이미지의 장소가 어딘지 한문장으로 알려줘" #이미지 첨부해 질문하기
 ```
 
 ### 도구 추가
