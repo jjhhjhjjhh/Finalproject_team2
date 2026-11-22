@@ -49,6 +49,7 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 
 # 최대 반환 문자 수
 MAX_OUTPUT_LENGTH = 30000
+TOOL_TIMEOUT_SECONDS = 120
 
 mcp = FastMCP("my-tools")
 OUTPUT_DIR = Path(__file__).parent / "outputs"
@@ -79,12 +80,12 @@ def search_wikipedia(query: str) -> str:
     headers = {"User-Agent": "snu-seminar-mcp-lab/1.0"}
     url = ("https://ko.wikipedia.org/w/api.php?action=query&list=search&format=json"
            f"&srlimit=1&srsearch={quote(query)}")
-    hits = json.load(urlopen(Request(url, headers=headers), timeout=15))["query"]["search"]
+    hits = json.load(urlopen(Request(url, headers=headers), timeout=TOOL_TIMEOUT_SECONDS))["query"]["search"]
     if not hits:
         return "검색 결과가 없습니다."
     title = hits[0]["title"]
     url = f"https://ko.wikipedia.org/api/rest_v1/page/summary/{quote(title)}"
-    summary = json.load(urlopen(Request(url, headers=headers), timeout=15))
+    summary = json.load(urlopen(Request(url, headers=headers), timeout=TOOL_TIMEOUT_SECONDS))
     return f"제목: {title}\n요약: {summary.get('extract', '')}"
 
 
@@ -137,7 +138,7 @@ def send_email(to: str, subject: str, body: str) -> str:
         msg["Subject"] = subject
         msg.set_content(body)
 
-        with smtplib.SMTP(host, port, timeout=20) as server:
+        with smtplib.SMTP(host, port, timeout=TOOL_TIMEOUT_SECONDS) as server:
             server.ehlo()
             server.starttls(context=ssl.create_default_context())
             server.ehlo()
@@ -187,7 +188,7 @@ def run_math_python(code: str) -> str:
             ],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=TOOL_TIMEOUT_SECONDS,
         )
 
         if result.returncode != 0:
@@ -207,7 +208,7 @@ def run_math_python(code: str) -> str:
         return f"Python 실행 성공\n결과:\n{output[:4000]}"
 
     except subprocess.TimeoutExpired:
-        return "오류: 실행 시간이 30초를 초과했습니다."
+        return f"오류: 실행 시간이 {TOOL_TIMEOUT_SECONDS}초를 초과했습니다."
 
     except Exception as e:
         return f"Python 실행 오류: {type(e).__name__}: {e}"
@@ -247,7 +248,7 @@ def web_search(query: str) -> str:
             url,
             headers=headers,
             json=payload,
-            timeout=20
+            timeout=TOOL_TIMEOUT_SECONDS,
         )
 
         response.raise_for_status()
@@ -592,7 +593,7 @@ def download_document(url: str) -> str:
             response = requests.get(
                 current_url,
                 stream=True,
-                timeout=(5, 20),
+                timeout=(5, TOOL_TIMEOUT_SECONDS),
                 allow_redirects=False,
                 headers={
                     "User-Agent": "Team2-DocumentAgent/1.0"
@@ -753,7 +754,7 @@ def request_lens_search(image_id: str, api_key: str) -> requests.Response:
         try:
             return requests.get(
                 "https://serpapi.com/search", params=params,
-                timeout=(5, 40), allow_redirects=False,
+                timeout=(5, TOOL_TIMEOUT_SECONDS), allow_redirects=False,
             )
         except (requests.exceptions.SSLError, requests.exceptions.ProxyError):
             raise
@@ -792,7 +793,7 @@ def google_lens_search(image_path: str) -> str:
             "https://serpapi.com/image",
             data={"api_key": api_key},
             files={"image": upload_image},
-            timeout=(5, 20),
+            timeout=(5, TOOL_TIMEOUT_SECONDS),
             allow_redirects=False,
         )
         upload.raise_for_status()
