@@ -16,6 +16,8 @@ import ollama
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from memory import retrieve_memories, save_qa
+import shutil
+import uuid
 
 MODEL = "qwen3.8:27b"
 HERE = Path(__file__).parent
@@ -43,7 +45,8 @@ SYSTEM = ("당신은 도구를 사용해 일을 처리하는 도우미입니다.
           "요청을 처리할 때 필요한 도구가 있으면 실제로 호출하세요. 도구를 호출하지 않았다면 "
           "호출한 것처럼 말하지 마세요. 도구에서 오류가 오면 전체 대화 기록과 오류를 확인하고 "
           "인자를 고쳐 최대 한 번 재시도하세요. 그래도 실행할 수 없으면 그 사실을 짧게 설명하세요.")
-MAX_TURNS = 5
+MAX_TURNS = 15
+
 
 
 async def connect(stack):
@@ -93,12 +96,87 @@ def load_image(image_path: str) -> bytes:
         raise ValueError(f"지원하지 않는 이미지 형식입니다: {image_path}")
     return path.read_bytes()
 
+def save_image_for_search(image_path: str) -> str:
+    """
+    입력받은 이미지를 images 폴더에 자동 복사한다.
+
+    반환값:
+        Google Lens MCP Tool에 전달할 파일명
+    """
+
+    source = Path(image_path).resolve()
+
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"이미지 파일을 찾을 수 없습니다: {image_path}"
+        )
+
+    if source.suffix.lower() not in {
+        ".jpg", ".jpeg", ".png", ".webp"
+    }:
+        raise ValueError("지원하지 않는 이미지 형식입니다.")
+
+    if source.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError("이미지 크기가 10MB를 초과합니다.")
+
+    # images 폴더 생성
+    image_dir = HERE / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    # 중복 파일명 방지
+    filename = (
+        f"search_{uuid.uuid4().hex[:12]}"
+        f"{source.suffix.lower()}"
+    )
+
+    destination = image_dir / filename
+
+    # 이미지 복사
+    shutil.copy2(source, destination)
+
+    return filename
+
 
 async def ask(question, image_path=None, *, image_paths=()):
-    user_message = {"role": "user", "content": question}
-    paths = (image_path, *image_paths) if image_path is not None else image_paths
+
+    user_message = {
+        "role": "user",
+        "content": question
+    }
+
+    paths = (
+        (image_path, *image_paths)
+        if image_path is not None
+        else image_paths
+    )
+
     if paths:
-        user_message["images"] = [load_image(path) for path in paths]
+
+        # Qwen 이미지 분석용 데이터
+        user_message["images"] = [
+            load_image(path)
+            for path in paths
+        ]
+
+        # Google Lens 검색용 이미지 자동 저장
+        saved_images = [
+            save_image_for_search(path)
+            for path in paths
+        ]
+
+        # Qwen에게 실제 저장된 파일명 전달
+        user_message["content"] += (
+            "\n\n[첨부 이미지 정보]\n"
+            "다음 이미지들이 Google Lens 검색용 폴더에 "
+            "자동 저장되었습니다.\n"
+            + "\n".join(
+                f"- {filename}"
+                for filename in saved_images
+            )
+            + "\n이미지 역검색이 필요하면 "
+            "google_lens_search 도구에 "
+            "위 파일명을 전달하세요."
+        )
 
     if not check_ollama():
         return
@@ -139,7 +217,7 @@ async def ask(question, image_path=None, *, image_paths=()):
                 messages=messages,
                 tools=None if last else schemas,
                 think=False,
-                options={"temperature": 0.3, "num_predict": 256},
+                options={"temperature": 0.2, "num_predict": 1024, "num_ctx": 16384},
             )
             message = response.message
             messages.append(message)

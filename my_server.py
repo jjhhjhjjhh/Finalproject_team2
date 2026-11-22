@@ -39,6 +39,7 @@ import socket
 import uuid
 
 from urllib.parse import urljoin, urlsplit
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # 문서를 읽을 수 있는 폴더
 DOCUMENT_DIR = Path(__file__).resolve().parent / "documents"
@@ -691,6 +692,182 @@ def download_document(url: str) -> str:
 
     except (ValueError, OSError, socket.gaierror) as e:
         return f"다운로드 실패: {e}"
+
+IMAGE_DIR = Path(__file__).resolve().parent / "images"
+
+
+@mcp.tool()
+async def google_lens_search(image_path: str) -> str:
+    """
+    Google Lens를 이용해 이미지 역검색을 수행한다.
+
+    - images 폴더의 이미지를 Google Lens에 업로드
+    - 이미지와 관련된 검색 결과 수집
+    - 검색 화면 텍스트와 웹페이지 URL 반환
+
+    image_path 예시: search_123456.jpg
+    """
+
+    try:
+        # 1. 이미지 파일 검사
+        path = (IMAGE_DIR / image_path).resolve()
+
+        if not path.is_relative_to(IMAGE_DIR.resolve()):
+            return "오류: images 폴더 외부 파일은 사용할 수 없습니다."
+
+        if not path.is_file():
+            return f"오류: 이미지 파일이 없습니다: {path}"
+
+        if path.suffix.lower() not in {
+            ".jpg", ".jpeg", ".png", ".webp"
+        }:
+            return "오류: 지원하지 않는 이미지 형식입니다."
+
+        if path.stat().st_size > 10 * 1024 * 1024:
+            return "오류: 이미지 크기가 10MB를 초과합니다."
+
+        # 2. 비동기 Playwright 실행
+        async with async_playwright() as p:
+
+            browser = await p.chromium.launch(
+                headless=False
+            )
+
+            try:
+                page = await browser.new_page(
+                    locale="ko-KR",
+                    viewport={
+                        "width": 1280,
+                        "height": 900
+                    }
+                )
+
+                # 3. Google Lens 접속
+                await page.goto(
+                    "https://lens.google.com/",
+                    wait_until="domcontentloaded",
+                    timeout=30000
+                )
+
+                # 4. 이미지 업로드 요소 찾기
+                upload = page.locator(
+                    'input[type="file"]'
+                ).first
+
+                try:
+                    await upload.wait_for(
+                        state="attached",
+                        timeout=10000
+                    )
+
+                except PlaywrightTimeoutError:
+                    return (
+                        "오류: Google Lens 이미지 업로드 "
+                        "입력란을 찾지 못했습니다."
+                    )
+
+                # 5. 이미지 업로드
+                await upload.set_input_files(str(path))
+
+                # 6. 검색 결과 로딩
+                try:
+                    await page.wait_for_url(
+                        "**/search?**",
+                        timeout=15000
+                    )
+                except PlaywrightTimeoutError:
+                    pass
+
+                await page.wait_for_timeout(3000)
+
+                # 7. 검색 결과 텍스트 추출
+                page_text = await page.locator(
+                    "body"
+                ).inner_text(timeout=15000)
+
+                # 8. 검색 결과 링크 추출
+                links = await page.locator(
+                    "a[href]"
+                ).evaluate_all(
+                    """elements => elements.map(a => ({
+                        title: (
+                            a.innerText ||
+                            a.getAttribute('aria-label') ||
+                            ''
+                        ).trim(),
+                        url: a.href
+                    }))"""
+                )
+
+                output = []
+                seen = set()
+
+                for link in links:
+
+                    url = link.get("url", "")
+                    title = link.get("title", "")
+
+                    if not url.startswith(
+                        ("https://", "http://")
+                    ):
+                        continue
+
+                    host = (
+                        urlsplit(url).hostname or ""
+                    ).lower()
+
+                    # Google 내부 링크 제외
+                    if (
+                        host == "google.com"
+                        or host.endswith(".google.com")
+                        or host == "google.co.kr"
+                        or host.endswith(".google.co.kr")
+                        or host == "gstatic.com"
+                        or host.endswith(".gstatic.com")
+                    ):
+                        continue
+
+                    if url in seen:
+                        continue
+
+                    seen.add(url)
+
+                    output.append(
+                        f"제목: {title or '제목 없음'}\n"
+                        f"URL: {url}"
+                    )
+
+                    if len(output) >= 10:
+                        break
+
+                # 9. 결과 반환
+                return (
+                    "[Google Lens 검색 결과]\n"
+                    f"이미지: {path.name}\n"
+                    f"검색 URL: {page.url}\n\n"
+                    "[검색 화면 텍스트]\n"
+                    f"{page_text[:5000]}\n\n"
+                    "[관련 웹페이지]\n"
+                    + (
+                        "\n\n".join(output)
+                        if output
+                        else "관련 웹페이지를 추출하지 못했습니다."
+                    )
+                )
+
+            finally:
+                await browser.close()
+
+    except PlaywrightTimeoutError:
+        return "오류: Google Lens 검색 시간이 초과되었습니다."
+
+    except Exception as e:
+        return (
+            "Google Lens 검색 오류: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 
 if __name__ == "__main__":
     mcp.run()
