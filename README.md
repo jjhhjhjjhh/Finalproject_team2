@@ -140,14 +140,14 @@ Python 3.10 이상, Ollama 앱 실행 + 모델 설치 필요.
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-ollama pull qwen3-vl:2b-instruct
+ollama pull qwen3.8:27b
 ```
 
 **Windows (PowerShell)**
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
-ollama pull qwen3-vl:2b-instruct
+ollama pull qwen3.8:27b
 ```
 
 ### 실행
@@ -159,6 +159,8 @@ macOS / Linux는 `.venv/bin/python`, Windows는 `.\.venv\Scripts\python.exe`
 .venv/bin/python agent.py "위키백과에서 서울대학교를 찾아서 두 문장으로 알려줘"   # 질문하기
 .venv/bin/python agent.py --image "이미지 파일 디렉토리\이미지.jpg" "이 이미지의 장소가 어딘지 한문장으로 알려줘" #이미지 첨부해 질문하기
 ```
+
+첨부 이미지의 출처나 유사 이미지를 찾으려면 프로젝트의 `.env`에 `SERPAPI_API_KEY=발급받은_키`를 설정하고, `--image`와 함께 “Google Lens로 이 이미지의 출처를 찾아 링크를 알려줘”라고 질문하세요. Lens 검색 시 첨부 이미지를 SerpApi에 업로드합니다. 500KB를 넘는 파일은 업로드용 사본의 크기를 줄입니다.
 
 ### 도구 추가
 

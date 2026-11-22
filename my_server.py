@@ -39,7 +39,7 @@ import socket
 import uuid
 
 from urllib.parse import urljoin, urlsplit
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from PIL import Image, ImageOps
 
 # 문서를 읽을 수 있는 폴더
 DOCUMENT_DIR = Path(__file__).resolve().parent / "documents"
@@ -694,179 +694,149 @@ def download_document(url: str) -> str:
         return f"다운로드 실패: {e}"
 
 IMAGE_DIR = Path(__file__).resolve().parent / "images"
+SERPAPI_IMAGE_LIMIT = 500_000
+LENS_IMAGE_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def prepare_lens_image(path: Path) -> tuple[str, bytes, str]:
+    content = path.read_bytes()
+    if len(content) <= SERPAPI_IMAGE_LIMIT:
+        return path.name, content, LENS_IMAGE_TYPES[path.suffix.lower()]
+
+    with Image.open(io.BytesIO(content)) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+    image.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+    for quality in (88, 78, 68, 58):
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=quality, optimize=True)
+        if buffer.tell() <= SERPAPI_IMAGE_LIMIT:
+            return f"{path.stem}.jpg", buffer.getvalue(), "image/jpeg"
+        image.thumbnail(
+            (max(1, image.width * 3 // 4), max(1, image.height * 3 // 4)),
+            Image.Resampling.LANCZOS,
+        )
+    raise ValueError("이미지를 SerpApi의 500KB 제한에 맞게 줄이지 못했습니다.")
+
+
+def format_lens_results(filename: str, data: dict) -> str:
+    sources = []
+    seen = set()
+    for field, label in (("exact_matches", "일치 후보"), ("visual_matches", "유사 후보")):
+        for match in data.get(field) or []:
+            url = match.get("link") or ""
+            if not url.startswith(("https://", "http://")) or len(url) > 600 or url in seen:
+                continue
+            seen.add(url)
+            title = " ".join((match.get("title") or match.get("source") or "제목 없음").split())
+            sources.append(f"- [{label}] {title[:140]}\n  {url}")
+            if len(sources) == 4:
+                break
+        if len(sources) == 4:
+            break
+
+    if not sources:
+        return f"Google Lens 결과 없음 ({filename}): 확인할 수 있는 출처 링크가 없습니다."
+    return f"[Google Lens 검색 결과] 이미지: {filename}\n[관련 웹페이지]\n" + "\n".join(sources)
+
+
+def request_lens_search(image_id: str, api_key: str) -> requests.Response:
+    params = {
+        "engine": "google_lens", "image_id": image_id, "type": "all",
+        "hl": "ko", "country": "kr", "api_key": api_key,
+    }
+    for attempt in range(2):
+        try:
+            return requests.get(
+                "https://serpapi.com/search", params=params,
+                timeout=(5, 40), allow_redirects=False,
+            )
+        except (requests.exceptions.SSLError, requests.exceptions.ProxyError):
+            raise
+        except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
+            if attempt == 1:
+                raise
 
 
 @mcp.tool()
-async def google_lens_search(image_path: str) -> str:
+def google_lens_search(image_path: str) -> str:
     """
-    Google Lens를 이용해 이미지 역검색을 수행한다.
-
-    - images 폴더의 이미지를 Google Lens에 업로드
-    - 이미지와 관련된 검색 결과 수집
-    - 검색 화면 텍스트와 웹페이지 URL 반환
-
-    image_path 예시: search_123456.jpg
+    첨부 이미지를 SerpApi에 업로드해 Google Lens의 일치·유사 이미지 출처를 찾는다.
+    image_path에는 안내된 첨부 이미지 파일명(예: search_123456.jpg)을 전달한다.
+    결과의 제목과 링크를 인용하고, 이미지의 출처가 불확실하면 이를 밝힌다.
     """
+    api_key = os.getenv("SERPAPI_API_KEY", "").strip()
+    if not api_key:
+        return "오류: .env에 SERPAPI_API_KEY를 설정하세요."
+
+    path = (IMAGE_DIR / image_path).resolve()
+    if not path.is_relative_to(IMAGE_DIR.resolve()):
+        return "오류: images 폴더 외부 파일은 사용할 수 없습니다."
+    if not path.is_file():
+        return f"오류: 이미지 파일이 없습니다: {image_path}"
+    if path.suffix.lower() not in LENS_IMAGE_TYPES:
+        return "오류: 지원하지 않는 이미지 형식입니다."
 
     try:
-        # 1. 이미지 파일 검사
-        path = (IMAGE_DIR / image_path).resolve()
+        upload_image = prepare_lens_image(path)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return "오류: SerpApi에 업로드할 이미지를 읽거나 500KB 이하로 변환할 수 없습니다."
 
-        if not path.is_relative_to(IMAGE_DIR.resolve()):
-            return "오류: images 폴더 외부 파일은 사용할 수 없습니다."
-
-        if not path.is_file():
-            return f"오류: 이미지 파일이 없습니다: {path}"
-
-        if path.suffix.lower() not in {
-            ".jpg", ".jpeg", ".png", ".webp"
-        }:
-            return "오류: 지원하지 않는 이미지 형식입니다."
-
-        if path.stat().st_size > 10 * 1024 * 1024:
-            return "오류: 이미지 크기가 10MB를 초과합니다."
-
-        # 2. 비동기 Playwright 실행
-        async with async_playwright() as p:
-
-            browser = await p.chromium.launch(
-                headless=False
-            )
-
-            try:
-                page = await browser.new_page(
-                    locale="ko-KR",
-                    viewport={
-                        "width": 1280,
-                        "height": 900
-                    }
-                )
-
-                # 3. Google Lens 접속
-                await page.goto(
-                    "https://lens.google.com/",
-                    wait_until="domcontentloaded",
-                    timeout=30000
-                )
-
-                # 4. 이미지 업로드 요소 찾기
-                upload = page.locator(
-                    'input[type="file"]'
-                ).first
-
-                try:
-                    await upload.wait_for(
-                        state="attached",
-                        timeout=10000
-                    )
-
-                except PlaywrightTimeoutError:
-                    return (
-                        "오류: Google Lens 이미지 업로드 "
-                        "입력란을 찾지 못했습니다."
-                    )
-
-                # 5. 이미지 업로드
-                await upload.set_input_files(str(path))
-
-                # 6. 검색 결과 로딩
-                try:
-                    await page.wait_for_url(
-                        "**/search?**",
-                        timeout=15000
-                    )
-                except PlaywrightTimeoutError:
-                    pass
-
-                await page.wait_for_timeout(3000)
-
-                # 7. 검색 결과 텍스트 추출
-                page_text = await page.locator(
-                    "body"
-                ).inner_text(timeout=15000)
-
-                # 8. 검색 결과 링크 추출
-                links = await page.locator(
-                    "a[href]"
-                ).evaluate_all(
-                    """elements => elements.map(a => ({
-                        title: (
-                            a.innerText ||
-                            a.getAttribute('aria-label') ||
-                            ''
-                        ).trim(),
-                        url: a.href
-                    }))"""
-                )
-
-                output = []
-                seen = set()
-
-                for link in links:
-
-                    url = link.get("url", "")
-                    title = link.get("title", "")
-
-                    if not url.startswith(
-                        ("https://", "http://")
-                    ):
-                        continue
-
-                    host = (
-                        urlsplit(url).hostname or ""
-                    ).lower()
-
-                    # Google 내부 링크 제외
-                    if (
-                        host == "google.com"
-                        or host.endswith(".google.com")
-                        or host == "google.co.kr"
-                        or host.endswith(".google.co.kr")
-                        or host == "gstatic.com"
-                        or host.endswith(".gstatic.com")
-                    ):
-                        continue
-
-                    if url in seen:
-                        continue
-
-                    seen.add(url)
-
-                    output.append(
-                        f"제목: {title or '제목 없음'}\n"
-                        f"URL: {url}"
-                    )
-
-                    if len(output) >= 10:
-                        break
-
-                # 9. 결과 반환
-                return (
-                    "[Google Lens 검색 결과]\n"
-                    f"이미지: {path.name}\n"
-                    f"검색 URL: {page.url}\n\n"
-                    "[검색 화면 텍스트]\n"
-                    f"{page_text[:5000]}\n\n"
-                    "[관련 웹페이지]\n"
-                    + (
-                        "\n\n".join(output)
-                        if output
-                        else "관련 웹페이지를 추출하지 못했습니다."
-                    )
-                )
-
-            finally:
-                await browser.close()
-
-    except PlaywrightTimeoutError:
-        return "오류: Google Lens 검색 시간이 초과되었습니다."
-
-    except Exception as e:
-        return (
-            "Google Lens 검색 오류: "
-            f"{type(e).__name__}: {e}"
+    stage = "이미지 업로드"
+    try:
+        upload = requests.post(
+            "https://serpapi.com/image",
+            data={"api_key": api_key},
+            files={"image": upload_image},
+            timeout=(5, 20),
+            allow_redirects=False,
         )
+        upload.raise_for_status()
+        uploaded = upload.json()
+        image_id = uploaded.get("image_id")
+        if uploaded.get("error") or not image_id:
+            return "오류: SerpApi가 이미지 업로드를 완료하지 못했습니다."
 
+        stage = "Google Lens 검색"
+        search = request_lens_search(image_id, api_key)
+        search.raise_for_status()
+        data = search.json()
+        if data.get("error"):
+            return "오류: SerpApi가 Google Lens 검색을 완료하지 못했습니다."
+        return format_lens_results(path.name, data)
+    except requests.Timeout:
+        return f"오류: SerpApi {stage} 시간이 초과되었습니다."
+    except requests.HTTPError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            return "오류: SerpApi 인증에 실패했습니다. .env의 SERPAPI_API_KEY를 확인하세요."
+        if status == 429:
+            return "오류: SerpApi 요청 한도에 도달했습니다."
+        return f"오류: SerpApi {stage} 실패 (HTTP {status})."
+    except requests.exceptions.JSONDecodeError:
+        return f"오류: SerpApi {stage} 응답을 읽을 수 없습니다."
+    except requests.exceptions.SSLError:
+        return f"오류: SerpApi {stage} 연결의 TLS 인증서 검증 또는 협상이 실패했습니다."
+    except requests.exceptions.ProxyError:
+        return f"오류: SerpApi {stage} 요청이 프록시에 연결하지 못했습니다."
+    except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError):
+        return f"오류: SerpApi {stage} 응답이 전송 중 끊겼거나 손상됐습니다."
+    except requests.RequestException as exc:
+        # 요청 URL 대신 예외 유형과 시스템 오류 번호만 표시해 API 키 노출을 막는다.
+        details = [type(exc).__name__]
+        cause = exc.__cause__ or exc.__context__
+        while cause:
+            details.append(type(cause).__name__)
+            error_number = getattr(cause, "winerror", None) or getattr(cause, "errno", None)
+            if error_number is not None:
+                details.append(str(error_number))
+                break
+            cause = cause.__cause__ or cause.__context__
+        return f"오류: SerpApi {stage} 요청 실패 ({', '.join(details)})."
 
 
 if __name__ == "__main__":
