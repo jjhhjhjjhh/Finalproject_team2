@@ -3,9 +3,11 @@
 사용법
   python agent.py --tools          연결된 MCP 도구 목록 보기
   python agent.py "질문"            Agent에게 질문하기
+  python agent.py --image 첫번째.png --image 두번째.jpg "두 이미지를 비교해 줘."
 """
 import asyncio
 import json
+import os
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -15,18 +17,24 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from memory import retrieve_memories, save_qa
 
-MODEL = "qwen3-vl:2b-instruct"
+MODEL = "qwen3.8:27b"
 HERE = Path(__file__).parent
 
 # 연결할 MCP 서버: 이름 → 실행 방법
 SERVERS = {
-    "my-tools": StdioServerParameters(command=sys.executable, args=[str(HERE / "my_server.py")]),   # 직접 만든 서버
+    "my-tools": StdioServerParameters(
+        command=sys.executable,
+        args=[str(HERE / "my_server.py")],
+        env={"TAVILY_API_KEY": os.environ["TAVILY_API_KEY"]} if os.getenv("TAVILY_API_KEY") else None,
+    ),
     "fetch": StdioServerParameters(command=sys.executable, args=["-m", "mcp_server_fetch"]),        # 공식 서버
 }
 
 SYSTEM = ("당신은 도구를 사용해 일을 처리하는 도우미입니다. 필요하면 도구를 호출하고, 결과를 보고 한국어로 짧게 답하세요. "
           "엑셀 표를 만들 때는 create_excel의 csv_text에 첫 줄을 열 이름으로 하는 쉼표 구분 표를 넣으세요."
           "정보를 검색해야 할 때는 web_search를 사용하세요."
+          "첨부 이미지의 특징을 분석하고, 식별에 추가 확인이 필요하면 web_search를 사용하세요."
+          "웹 이미지를 요청받으면 web_search가 반환한 이미지 URL을 답변에 포함하세요."
           "날짜와 관련된 일을 처리할 때는 current_datetime을 사용해서 현재 날짜를 확인하세요."
           "이메일을 보낼 때는 send_email을 사용하세요. 이메일을 보내고 나면 성공 여부를 확인하고, 실패하면 오류 메시지를 확인하세요."
           "정보를 검색할 때는 web_search를 사용하세요. 검색 결과를 요약해서 답변에 포함시키세요."
@@ -76,7 +84,22 @@ def check_ollama():
     return True
 
 
-async def ask(question):
+def load_image(image_path: str) -> bytes:
+    """이미지 파일을 읽어 Ollama에 전달할 바이트로 반환한다."""
+    path = Path(image_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+    if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError(f"지원하지 않는 이미지 형식입니다: {image_path}")
+    return path.read_bytes()
+
+
+async def ask(question, image_path=None, *, image_paths=()):
+    user_message = {"role": "user", "content": question}
+    paths = (image_path, *image_paths) if image_path is not None else image_paths
+    if paths:
+        user_message["images"] = [load_image(path) for path in paths]
+
     if not check_ollama():
         return
 
@@ -104,16 +127,18 @@ async def ask(question):
                 ),
             })
 
-        messages.append({"role": "user", "content": question})
+        messages.append(user_message)
         print(f"[QUESTION] {question}")
 
         for turn in range(1, MAX_TURNS + 1):
             last = turn == MAX_TURNS
 
+            print(f"[MODEL] {MODEL} 응답 대기 중 ({turn}/{MAX_TURNS})", flush=True)
             response = ollama.chat(
                 model=MODEL,
                 messages=messages,
                 tools=None if last else schemas,
+                think=False,
                 options={"temperature": 0.3, "num_predict": 256},
             )
             message = response.message
@@ -121,15 +146,17 @@ async def ask(question):
 
             if not message.tool_calls:
                 answer = message.content or ""
+                if not answer.strip():
+                    print(f"[ERROR] 모델이 빈 응답을 반환했습니다. 종료 사유: {response.done_reason}")
+                    return
                 print(f"[ANSWER] {answer}")
 
                 # 최종 답변과 질문을 텍스트 파일로 저장
-                if answer.strip():
-                    try:
-                        filename = save_qa(question, answer)
-                        print(f"[MEMORY SAVED] memory/records/{filename}")
-                    except Exception as exc:
-                        print(f"[MEMORY SAVE ERROR] {exc}")
+                try:
+                    filename = save_qa(question, answer)
+                    print(f"[MEMORY SAVED] memory/records/{filename}")
+                except Exception as exc:
+                    print(f"[MEMORY SAVE ERROR] {exc}")
 
                 return
 
@@ -179,5 +206,23 @@ if __name__ == "__main__":
         print(__doc__)
     elif sys.argv[1] == "--tools":
         asyncio.run(show_tools())
+    elif sys.argv[1] == "--image":
+        args = iter(sys.argv[1:])
+        image_paths = []
+        for arg in args:
+            if arg != "--image":
+                question = " ".join([arg, *args])
+                break
+            path = next(args, None)
+            if path is None or path == "--image":
+                sys.exit("사용법: python agent.py --image 이미지경로 [--image 이미지경로] [질문]")
+            image_paths.append(path)
+        else:
+            question = "첨부한 이미지를 분석해 줘."
+
+        try:
+            asyncio.run(ask(question, image_paths=image_paths))
+        except (OSError, ValueError) as exc:
+            sys.exit(f"[ERROR] {exc}")
     else:
         asyncio.run(ask(" ".join(sys.argv[1:])))

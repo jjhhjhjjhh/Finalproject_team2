@@ -2,3 +2,7 @@ mcp>=1.10,<2
 mcp-server-fetch
 ollama
 openpyxl
+requests
+python-dotenv
+PyMuPDF
+python-docx

@@ -214,7 +214,7 @@ def run_math_python(code: str) -> str:
 @mcp.tool()
 def web_search(query: str) -> str:
     """
-    인터넷에서 정보를 검색한다.
+    인터넷에서 웹 문서와 관련 이미지 URL을 검색한다.
     """
 
     api_key = os.getenv("TAVILY_API_KEY")
@@ -255,11 +255,19 @@ def web_search(query: str) -> str:
 
         results = data.get("results", [])
 
-        if not results:
+        images = data.get("images") or []
+        image_urls = [
+            image if isinstance(image, str) else image.get("url")
+            for image in images
+        ]
+        image_urls = [url for url in image_urls if url]
+        if not results and not image_urls:
             return "검색 결과가 없습니다."
 
         output = []
 
+        if image_urls:
+            output.append("이미지 URL:\n" + "\n".join(image_urls[:5]) + "\n")
         for i, result in enumerate(results, start=1):
 
             title = result.get("title", "")
