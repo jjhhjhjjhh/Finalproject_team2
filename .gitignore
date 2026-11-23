@@ -9,3 +9,9 @@ logs/
 .DS_Store
 .vscode/
 .idea/
+
+# 실행 중 생기는 데이터 — 제출 코드에 섞이지 않게
+memory/
+documents/
+images/
+eval/results/

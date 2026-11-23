@@ -162,6 +162,16 @@ macOS / Linux는 `.venv/bin/python`, Windows는 `.\.venv\Scripts\python.exe`
 
 첨부 이미지의 출처나 유사 이미지를 찾으려면 프로젝트의 `.env`에 `SERPAPI_API_KEY=발급받은_키`를 설정하고, `--image`와 함께 “Google Lens로 이 이미지의 출처를 찾아 링크를 알려줘”라고 질문하세요. Lens 검색 시 첨부 이미지를 SerpApi에 업로드합니다. 500KB를 넘는 파일은 업로드용 사본의 크기를 줄입니다.
 
+### 도구 안전장치
+
+TA 컴퓨터에서 돌아가므로, 검색 결과 속 지시(프롬프트 인젝션) 등으로 위험한 동작을 하지 않게 제한해 두었다.
+
+| 도구 | 제한 |
+|---|---|
+| `run_math_python` | 계산 모듈(math, fractions, numpy, sympy 등)만 import 가능 · 파일/네트워크/프로그램 실행 차단 · API 키 없는 환경, 임시 폴더에서 30초 제한 |
+| `send_email` | 본인(`SMTP_USER`)과 `.env`의 `EMAIL_ALLOWED_RECIPIENTS`(쉼표 구분)에 등록된 주소로만 전송 |
+| `open_webpage` | 사용자가 직접 요청할 때만 · localhost·사설 IP 등 내부 주소 차단 |
+
 ### 도구 추가
 
 `my_server.py`에 `@mcp.tool()`을 붙인 함수를 추가하면 새 도구가 된다. 함수 설명(docstring)이 모델에게 전달된다.
@@ -193,7 +203,20 @@ def add(a: float, b: float) -> float:
 
 ## Evaluation Metrics
 
-> 추가 예정 (다음 다음 주 확정)
+GAIA 벤치마크 방식(레벨 1~3, 정답 정규화 비교) + 과제 공지 예시의 형식 요구(출처·기준일·표)로 채점한다.
+
+```bash
+.venv/bin/python eval/run_eval.py --mode both   # Agent vs baseline(도구 없이 모델만)
+```
+
+| 지표 | 의미 |
+|---|---|
+| 정답률 (전체·레벨별) | 최종 답 일치 + 형식 요구 충족 |
+| 형식 요구 충족률 | 출처·기준일·표 등 |
+| 평균·총 소요 시간 | 동점 시 순위 기준 |
+| 도구 호출·오류 수 | 도구 사용 효율 |
+
+평가셋 구성·실행 옵션: [eval/README.md](eval/README.md)
 
 ## Known Issues / Operational Notes
 
