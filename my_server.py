@@ -205,6 +205,29 @@ MATH_BLOCKED_ATTRS = {
 }
 
 
+# 코드 검사만으로는 sympify("open(...)") 같은 문자열 해석 우회를 다 막을 수 없어서,
+# 실행 시점에 audit hook으로 파일 쓰기·파이썬 설치 폴더 밖 파일 읽기·네트워크·프로그램 실행을 막는다
+MATH_SANDBOX_PRELUDE = '''
+import os as _os, sys as _sys
+_ALLOWED_READ = tuple({_os.path.realpath(p) for p in (_sys.prefix, _sys.base_prefix, _sys.exec_prefix, *_sys.path) if p})
+_BLOCKED = ("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
+            "os.startfile", "os.remove", "os.unlink", "os.rename", "os.rmdir", "os.mkdir", "os.truncate",
+            "shutil.", "urllib.", "webbrowser.", "sqlite3.")  # ctypes는 Windows의 numpy·scipy DLL 로딩에 필요
+def _guard(event, args):
+    if event.startswith(_BLOCKED):
+        raise PermissionError(f"계산 도구에서 허용되지 않은 동작입니다: {event}")
+    if event == "open":
+        path, mode, flags = args
+        if isinstance(path, int):
+            return
+        writing = (mode and any(c in mode for c in "wax+")) or (flags or 0) & (_os.O_WRONLY | _os.O_RDWR | _os.O_CREAT)
+        if writing or not _os.path.realpath(_os.fsdecode(path)).startswith(_ALLOWED_READ):
+            raise PermissionError("계산 도구에서는 파일을 읽거나 쓸 수 없습니다.")
+_sys.addaudithook(_guard)
+del _guard
+'''
+
+
 def check_math_code(code: str) -> str | None:
     """실행 전에 코드를 검사한다. 문제가 있으면 오류 메시지, 없으면 None."""
     import ast
@@ -273,8 +296,9 @@ def run_math_python(code: str) -> str:
                 [
                     sys.executable,
                     "-I",
+                    "-B",
                     "-c",
-                    code
+                    f"exec({MATH_SANDBOX_PRELUDE!r})\n" + code  # 오류 줄 번호가 거의 그대로 보이게 한 줄로 실행
                 ],
                 capture_output=True,
                 text=True,
@@ -362,19 +386,28 @@ def web_search(query: str) -> str:
 
         output = []
 
-        if image_urls:
-            output.append("이미지 URL:\n" + "\n".join(image_urls[:5]) + "\n")
+        # agent.py는 2000자가 넘는 도구 결과의 가운데를 잘라내므로,
+        # 모든 결과가 남도록 전체를 1900자 안에 맞추고 이미지 URL은 맨 뒤에 둔다
+        image_block = "이미지 URL:\n" + "\n".join(image_urls[:3]) if image_urls else ""
+        fixed = len(image_block) + sum(
+            len(result.get("title", "")) + len(result.get("url", "")) + 25 for result in results
+        )
+        per_content = max(100, (1900 - fixed) // max(1, len(results)))
+
         for i, result in enumerate(results, start=1):
 
             title = result.get("title", "")
             link = result.get("url", "")
-            content = result.get("content", "")
+            content = " ".join(result.get("content", "").split())[:per_content]
 
             output.append(
                 f"[{i}] {title}\n"
                 f"URL: {link}\n"
                 f"내용: {content}\n"
             )
+
+        if image_block:
+            output.append(image_block)
 
         return "\n".join(output)
 

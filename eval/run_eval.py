@@ -59,11 +59,6 @@ class Tee(io.TextIOBase):
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
 
-def to_number(text):
-    match = NUMBER.search(text.replace(",", ""))
-    return float(match.group()) if match else None
-
-
 def normalize_text(text):
     return re.sub(r"[\s\W_]+", "", text).casefold()
 
@@ -75,16 +70,19 @@ def extract_final(answer):
 
 
 def match_final(target, answer_type, final, full_answer):
-    """최종 답 줄이 있으면 그것으로, 없으면 답변 전체에서 찾는다."""
+    """최종 답 줄이 있으면 그것으로, 없으면 답변의 마지막 줄로 비교한다.
+    (답변 전체에서 찾으면 문제 속 숫자·단어를 되풀이하기만 해도 정답 처리된다)"""
     targets = target if isinstance(target, list) else [target]
+    if not final:
+        lines = [line for line in (full_answer or "").splitlines() if line.strip()]
+        final = lines[-1] if lines else ""
     if answer_type == "number":
-        candidates = [to_number(final)] if final else [
-            float(n) for n in NUMBER.findall((full_answer or "").replace(",", ""))
-        ]
+        # '2047년(21년 후)'처럼 숫자가 여러 개면 그중 하나라도 맞으면 인정
+        candidates = [float(n) for n in NUMBER.findall(final.replace(",", ""))]
         return any(
             c is not None and abs(c - float(t)) < 1e-6 for c in candidates for t in targets
         )
-    haystack = normalize_text(final if final else full_answer or "")
+    haystack = normalize_text(final)
     return any(normalize_text(t) in haystack for t in targets)
 
 
