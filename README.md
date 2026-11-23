@@ -193,7 +193,20 @@ def add(a: float, b: float) -> float:
 
 ## Evaluation Metrics
 
-> 추가 예정 (다음 다음 주 확정)
+GAIA 벤치마크 방식(레벨 1~3, 정답 정규화 비교) + 과제 공지 예시의 형식 요구(출처·기준일·표)로 채점한다.
+
+```bash
+.venv/bin/python eval/run_eval.py --mode both   # Agent vs baseline(도구 없이 모델만)
+```
+
+| 지표 | 의미 |
+|---|---|
+| 정답률 (전체·레벨별) | 최종 답 일치 + 형식 요구 충족 |
+| 형식 요구 충족률 | 출처·기준일·표 등 |
+| 평균·총 소요 시간 | 동점 시 순위 기준 |
+| 도구 호출·오류 수 | 도구 사용 효율 |
+
+평가셋 구성·실행 옵션: [eval/README.md](eval/README.md)
 
 ## Known Issues / Operational Notes
 
