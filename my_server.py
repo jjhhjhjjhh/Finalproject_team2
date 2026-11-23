@@ -207,24 +207,28 @@ MATH_BLOCKED_ATTRS = {
 
 # 코드 검사만으로는 sympify("open(...)") 같은 문자열 해석 우회를 다 막을 수 없어서,
 # 실행 시점에 audit hook으로 파일 쓰기·파이썬 설치 폴더 밖 파일 읽기·네트워크·프로그램 실행을 막는다
+# 함수 안에서 설치해 os·sys가 사용자 코드의 전역 변수로 남지 않게 한다
 MATH_SANDBOX_PRELUDE = '''
-import os as _os, sys as _sys
-_ALLOWED_READ = tuple({_os.path.realpath(p) for p in (_sys.prefix, _sys.base_prefix, _sys.exec_prefix, *_sys.path) if p})
-_BLOCKED = ("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
-            "os.startfile", "os.remove", "os.unlink", "os.rename", "os.rmdir", "os.mkdir", "os.truncate",
-            "shutil.", "urllib.", "webbrowser.", "sqlite3.")  # ctypes는 Windows의 numpy·scipy DLL 로딩에 필요
-def _guard(event, args):
-    if event.startswith(_BLOCKED):
-        raise PermissionError(f"계산 도구에서 허용되지 않은 동작입니다: {event}")
-    if event == "open":
-        path, mode, flags = args
-        if isinstance(path, int):
-            return
-        writing = (mode and any(c in mode for c in "wax+")) or (flags or 0) & (_os.O_WRONLY | _os.O_RDWR | _os.O_CREAT)
-        if writing or not _os.path.realpath(_os.fsdecode(path)).startswith(_ALLOWED_READ):
-            raise PermissionError("계산 도구에서는 파일을 읽거나 쓸 수 없습니다.")
-_sys.addaudithook(_guard)
-del _guard
+def _install_guard():
+    import os, sys
+    allowed_read = tuple({os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path) if p})
+    blocked = ("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
+               "os.startfile", "os.remove", "os.unlink", "os.rename", "os.rmdir", "os.mkdir", "os.truncate",
+               "os.kill", "os.chmod", "os.chown", "os.link", "os.symlink", "os.utime", "signal.",
+               "shutil.", "urllib.", "webbrowser.", "sqlite3.")  # ctypes는 Windows의 numpy·scipy DLL 로딩에 필요
+    def guard(event, args):
+        if event.startswith(blocked):
+            raise PermissionError(f"계산 도구에서 허용되지 않은 동작입니다: {event}")
+        if event == "open":
+            path, mode, flags = args
+            if isinstance(path, int):
+                return
+            writing = (mode and any(c in mode for c in "wax+")) or (flags or 0) & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)
+            if writing or not os.path.realpath(os.fsdecode(path)).startswith(allowed_read):
+                raise PermissionError("계산 도구에서는 파일을 읽거나 쓸 수 없습니다.")
+    sys.addaudithook(guard)
+_install_guard()
+del _install_guard
 '''
 
 
