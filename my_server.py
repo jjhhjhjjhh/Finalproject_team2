@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote
@@ -67,9 +68,20 @@ def open_with_default_app(path):
 
 @mcp.tool()
 def open_webpage(url: str) -> str:
-    """웹페이지를 사용자의 브라우저에서 연다. url은 http:// 또는 https://로 시작해야 한다."""
+    """웹페이지를 사용자의 브라우저에서 연다. 사용자가 브라우저로 열어 달라고 직접 요청했을 때만 사용한다.
+    웹페이지 내용을 읽으려면 이 도구 대신 fetch를 사용한다. url은 http:// 또는 https://로 시작해야 한다."""
     if not url.startswith(("http://", "https://")):
         return "http:// 또는 https://로 시작하는 주소만 열 수 있습니다."
+    # 내부 네트워크(localhost, 사설 IP 등) 주소는 열지 않는다
+    try:
+        host = urlsplit(url).hostname
+        if not host:
+            return "주소에 호스트 이름이 없습니다."
+        for info in socket.getaddrinfo(host, None):
+            if not ipaddress.ip_address(info[4][0]).is_global:
+                return "내부 네트워크 주소는 열 수 없습니다."
+    except (socket.gaierror, ValueError):
+        return "주소를 확인할 수 없습니다."
     webbrowser.open(url)
     return f"브라우저에서 열었습니다: {url}"
 
@@ -115,7 +127,8 @@ def create_excel(filename: str, csv_text: str) -> str:
 
 @mcp.tool()
 def send_email(to: str, subject: str, body: str) -> str:
-    """이메일을 지정한 수신자에게 보낸다."""
+    """이메일을 지정한 수신자에게 보낸다. 사용자가 직접 요청했을 때만 사용한다.
+    수신자는 본인(SMTP_USER)과 .env의 EMAIL_ALLOWED_RECIPIENTS에 등록된 주소만 가능하다."""
     recipient = to.strip()
 
     if not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", recipient):
@@ -130,6 +143,19 @@ def send_email(to: str, subject: str, body: str) -> str:
 
     if not sender or not password:
         return "SMTP_USER와 SMTP_PASSWORD 환경 변수를 먼저 설정하세요."
+
+    # 검색 결과 속 지시 등으로 엉뚱한 곳에 메일이 가지 않도록 허용된 수신자에게만 보낸다
+    allowed = {
+        address.strip().lower()
+        for address in os.getenv("EMAIL_ALLOWED_RECIPIENTS", "").split(",")
+        if address.strip()
+    }
+    allowed.add(sender.strip().lower())
+    if recipient.lower() not in allowed:
+        return ("허용되지 않은 수신자입니다. 보내려면 .env의 EMAIL_ALLOWED_RECIPIENTS에 "
+                "주소를 쉼표로 구분해 추가하세요.")
+    if len(body) > 10000:
+        return "본문이 너무 깁니다 (최대 10,000자)."
 
     try:
         msg = EmailMessage()
@@ -159,6 +185,58 @@ def current_datetime(timezone_name: str = "Asia/Seoul") -> str:
     except Exception:
         return f"알 수 없는 시간대입니다: {timezone_name}"
 
+MATH_TIMEOUT_SECONDS = 30
+# 계산에 필요한 모듈만 import 허용
+MATH_ALLOWED_MODULES = {
+    "math", "cmath", "decimal", "fractions", "statistics", "random", "itertools", "functools",
+    "collections", "operator", "datetime", "calendar", "re", "json", "string", "bisect", "heapq",
+    "numpy", "sympy", "scipy", "pandas", "mpmath",
+}
+# 파일·프로세스·네트워크에 손댈 수 있는 내장 함수는 차단
+MATH_BLOCKED_NAMES = {
+    "open", "exec", "eval", "compile", "__import__", "input", "breakpoint",
+    "globals", "locals", "vars", "getattr", "setattr", "delattr", "memoryview",
+}
+# numpy·pandas 등에서 파일·네트워크를 다루는 함수 이름 (read_* 는 접두사로 모두 차단)
+MATH_BLOCKED_ATTRS = {
+    "system", "popen", "remove", "unlink", "rmdir", "rmtree",
+    "load", "save", "savez", "loadtxt", "savetxt", "genfromtxt", "fromfile", "tofile",
+    "to_csv", "to_excel", "to_pickle", "to_parquet", "to_json", "to_html", "to_sql", "to_hdf", "to_feather",
+}
+
+
+def check_math_code(code: str) -> str | None:
+    """실행 전에 코드를 검사한다. 문제가 있으면 오류 메시지, 없으면 None."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return f"문법 오류: {exc}"
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            modules = []
+        for module in modules:
+            if module.split(".")[0] not in MATH_ALLOWED_MODULES:
+                return f"허용되지 않은 모듈입니다: {module} (계산용 모듈만 사용 가능)"
+        if isinstance(node, ast.Name) and node.id in MATH_BLOCKED_NAMES:
+            return f"허용되지 않은 함수입니다: {node.id}"
+        if isinstance(node, ast.Attribute) and (
+            node.attr.startswith(("__", "read_")) or node.attr in MATH_BLOCKED_ATTRS
+        ):
+            return f"허용되지 않은 속성입니다: {node.attr}"
+        # sympify("...")처럼 문자열을 코드로 해석하는 우회를 막는다
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and (
+            "__" in node.value or "import" in node.value
+        ):
+            return "문자열 안에 '__'나 'import'를 쓸 수 없습니다."
+    return None
+
+
 @mcp.tool()
 def run_math_python(code: str) -> str:
     """
@@ -173,23 +251,39 @@ def run_math_python(code: str) -> str:
 
     제한:
     - 실행 시간 최대 30초
+    - import는 계산 모듈만 가능: math, fractions, decimal, statistics, itertools, datetime, numpy, sympy 등
+    - 파일 읽기·쓰기, 네트워크, 다른 프로그램 실행은 불가 (문서는 read_document 사용)
+    - 결과는 반드시 print()로 출력
     """
 
     if not code.strip():
         return "오류: 실행할 Python 코드가 없습니다."
 
+    problem = check_math_code(code)
+    if problem:
+        return f"Python 실행 거부\n{problem}\n계산 모듈(math, fractions, sympy 등)만 써서 다시 작성하세요."
+
+    # API 키 등 환경변수를 넘기지 않고, 프로젝트 밖 임시 폴더에서 실행한다
+    env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+    env.update(PYTHONIOENCODING="utf-8", OPENBLAS_NUM_THREADS="1")
+
     try:
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                code
-            ],
-            capture_output=True,
-            text=True,
-            timeout=TOOL_TIMEOUT_SECONDS,
-        )
+        with tempfile.TemporaryDirectory(prefix="math-") as workdir:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    code
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=workdir,
+                env=env,
+                timeout=MATH_TIMEOUT_SECONDS,
+            )
 
         if result.returncode != 0:
             return (
@@ -208,7 +302,7 @@ def run_math_python(code: str) -> str:
         return f"Python 실행 성공\n결과:\n{output[:4000]}"
 
     except subprocess.TimeoutExpired:
-        return f"오류: 실행 시간이 {TOOL_TIMEOUT_SECONDS}초를 초과했습니다."
+        return f"오류: 실행 시간이 {MATH_TIMEOUT_SECONDS}초를 초과했습니다."
 
     except Exception as e:
         return f"Python 실행 오류: {type(e).__name__}: {e}"
