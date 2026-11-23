@@ -252,7 +252,8 @@ def save_image_for_search(image_path: str) -> str:
     return filename
 
 
-async def ask(question, image_path=None, *, image_paths=()):
+async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_memory=True):
+    # 최종 답변을 반환한다. use_tools/use_memory=False는 평가(eval/run_eval.py)용
 
     user_message = {
         "role": "user",
@@ -297,15 +298,16 @@ async def ask(question, image_path=None, *, image_paths=()):
         return
 
     async with AsyncExitStack() as stack:
-        tools = await connect(stack)
+        tools = await connect(stack) if use_tools else {}
         schemas = [to_ollama(tool) for _, _, tool in tools.values()]
-        schemas.append(RECALL_SCHEMA)
+        if use_tools:
+            schemas.append(RECALL_SCHEMA)
         tool_memory = ToolResultMemory(Path(stack.enter_context(TemporaryDirectory(prefix="agent-tools-"))))
         recent_tool_turns = deque(maxlen=RECENT_TOOL_TURNS)
 
         # 이전 실행에서 저장된 기록을 검색
         try:
-            memory_context = retrieve_memories(question)
+            memory_context = retrieve_memories(question) if use_memory else ""
         except Exception as exc:
             print(f"[MEMORY SEARCH ERROR] {exc}")
             memory_context = ""
@@ -344,7 +346,7 @@ async def ask(question, image_path=None, *, image_paths=()):
             response = ollama.chat(
                 model=MODEL,
                 messages=messages,
-                tools=None if last else schemas,
+                tools=None if last or not schemas else schemas,
                 think=False,
                 options=MODEL_OPTIONS,
             )
@@ -384,13 +386,14 @@ async def ask(question, image_path=None, *, image_paths=()):
                 print(f"[ANSWER] {answer}", flush=True)
 
                 # 최종 답변과 질문을 텍스트 파일로 저장
-                try:
-                    filename = save_qa(question, answer)
-                    print(f"[MEMORY SAVED] memory/records/{filename}")
-                except Exception as exc:
-                    print(f"[MEMORY SAVE ERROR] {exc}")
+                if use_memory:
+                    try:
+                        filename = save_qa(question, answer)
+                        print(f"[MEMORY SAVED] memory/records/{filename}")
+                    except Exception as exc:
+                        print(f"[MEMORY SAVE ERROR] {exc}")
 
-                return
+                return answer
 
             turn_messages = [message]
             reused_count = 0
