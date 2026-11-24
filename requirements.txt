@@ -1,21 +1,15 @@
-# MCP
 mcp>=1.10,<2
 mcp-server-fetch
-# 모델 호출
 ollama
-# 문서·이미지 도구
 openpyxl
 PyMuPDF
 python-docx
 Pillow
-# 웹·환경설정
 requests
 python-dotenv
-# 계산 도구(run_math_python)에서 import 허용한 모듈
 sympy
 numpy
 pandas
 scipy
 mpmath
-# Windows에서 current_datetime(ZoneInfo) 동작에 필요
 tzdata
