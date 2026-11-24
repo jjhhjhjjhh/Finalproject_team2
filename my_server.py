@@ -31,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 import csv
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz  # 'import fitz'는 Windows에서 경고를 stdout에 찍어 MCP 통신을 오염시킨다
 from docx import Document
 from openpyxl import load_workbook
 
@@ -456,7 +456,9 @@ def read_document(file_path: str) -> str:
         DOCUMENT_DIR.mkdir(parents=True, exist_ok=True)
 
         # 2. 파일 경로 검증
-        path = (DOCUMENT_DIR / file_path).resolve()
+        # 모델이 "documents/파일"처럼 폴더 이름을 붙여 넘겨도 찾게 한다
+        relative = file_path.replace("\\", "/").removeprefix("./").removeprefix("documents/")
+        path = (DOCUMENT_DIR / relative).resolve()
 
         # 허용된 폴더 외부 접근 방지
         if not path.is_relative_to(DOCUMENT_DIR.resolve()):

@@ -445,8 +445,9 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                         if is_error:
                             text = f"도구 실행 오류: {text}"
                         # 일부 로컬 도구는 자체 시간 초과를 텍스트 결과로 반환한다.
+                        # 계산 도구 시간 초과는 모델이 짠 코드 문제라 코드를 고쳐 다시 시도하게 둔다.
                         first_line = text.partition("\n")[0]
-                        if first_line.startswith("오류:") and (
+                        if name != "run_math_python" and first_line.startswith("오류:") and (
                             "시간이 초과" in first_line or "초를 초과" in first_line
                         ):
                             finish_after_timeout = True
