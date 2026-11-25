@@ -148,10 +148,6 @@ def _validate_email(to: str, subject: str, body: str) -> str:
     sender = os.getenv("SMTP_USER", "").strip()
     if not sender or not os.getenv("SMTP_PASSWORD"):
         raise ValueError("SMTP_USER와 SMTP_PASSWORD를 설정하세요.")
-    allowed = {v.strip().lower() for v in os.getenv("EMAIL_ALLOWED_RECIPIENTS", "").split(",") if v.strip()}
-    allowed.add(sender.lower())
-    if recipient.lower() not in allowed:
-        raise ValueError("허용되지 않은 수신자입니다. EMAIL_ALLOWED_RECIPIENTS를 확인하세요.")
     return recipient
 
 
@@ -177,7 +173,6 @@ def send_email(to: str, subject: str, body: str, send_at: str = "", timezone_nam
     """사용자가 요청한 이메일을 발송한다. send_at이 비어 있으면 즉시 발송한다.
     예약 요청은 send_at에 YYYY-MM-DD HH:MM 또는 ISO 8601을 넣는다.
     시간대 기본값은 Asia/Seoul. 예약 저장은 발송 완료가 아니다.
-    본인과 EMAIL_ALLOWED_RECIPIENTS에 등록된 수신자만 가능하다.
     예약 발송에는 agent.py 대화 세션 또는 MCP 서버가 계속 실행 중이어야 한다.
     """
     if send_at:

@@ -22,7 +22,6 @@ class EmailTests(unittest.TestCase):
         env = patch.dict(os.environ, {
             'SMTP_USER': 'sender@example.com', 'SMTP_PASSWORD': 'fake',
             'SMTP_HOST': 'smtp.gmail.com', 'SMTP_PORT': '587',
-            'EMAIL_ALLOWED_RECIPIENTS': 'allowed@example.com',
         })
         env.start()
         self.addCleanup(env.stop)
@@ -64,7 +63,7 @@ class EmailTests(unittest.TestCase):
         self.assertEqual(server.send_due_emails(), 0)
         self.assertEqual(self.rows()[0]['status'], 'cancelled')
         for recipient, subject, when in [
-            ('blocked@example.com', 'Test', '2099-01-01'),
+            ('invalid-address', 'Test', '2099-01-01'),
             ('allowed@example.com', 'Bad\nHeader', '2099-01-01'),
             ('allowed@example.com', 'Test', '2000-01-01'),
             ('allowed@example.com', 'Test', 'bad-date'),
@@ -73,13 +72,18 @@ class EmailTests(unittest.TestCase):
         self.assertEqual(len(self.rows()), 1)
         self.smtp.send_message.assert_not_called()
 
-    def test_permission_rechecked_at_delivery(self):
+    def test_delivery_without_allowed_recipients(self):
+        with patch.dict(os.environ, {'EMAIL_ALLOWED_RECIPIENTS': ''}):
+            server.send_email('new@example.com', 'Test', 'Body')
+        self.smtp.send_message.assert_called_once()
+        self.assertEqual(self.smtp.send_message.call_args.args[0]['To'], 'new@example.com')
+        self.smtp.reset_mock()
         self.reserve()
         self.make_due()
         with patch.dict(os.environ, {'EMAIL_ALLOWED_RECIPIENTS': ''}):
             server.send_due_emails()
-        self.assertEqual(self.rows()[0]['status'], 'failed')
-        self.smtp.send_message.assert_not_called()
+        self.assertEqual(self.rows()[0]['status'], 'sent')
+        self.smtp.send_message.assert_called_once()
 
     def test_smtp_failure(self):
         self.reserve()

@@ -169,7 +169,7 @@ TA 컴퓨터에서 돌아가므로, 검색 결과 속 지시(프롬프트 인젝
 | 도구 | 제한 |
 |---|---|
 | `run_math_python` | 계산 모듈(math, fractions, numpy, sympy 등)만 import 가능 · 파일/네트워크/프로그램 실행 차단 · API 키 없는 환경, 임시 폴더에서 30초 제한 |
-| `send_email` | 본인(`SMTP_USER`)과 허용 수신자에게 즉시 발송 또는 `send_at`으로 예약 |
+| `send_email` | 지정한 수신자에게 즉시 발송 또는 `send_at`으로 예약 |
 | `schedule_email` | 날짜·시각과 시간대를 지정하여 이메일 예약 |
 | `list_scheduled_emails` | 예약 ID, 상태, 시각과 실패 이유 조회 |
 | `cancel_scheduled_email` | 아직 발송을 시작하지 않은 예약 취소 |
@@ -196,8 +196,8 @@ TA 컴퓨터에서 돌아가므로, 검색 결과 속 지시(프롬프트 인젝
 중복 발송을 막기 위해 수신 여부를 확인한 뒤 새로 예약하세요.
 
 SMTP는 기본적으로 Gmail의 587 포트와 STARTTLS를 사용합니다.
-`SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_ALLOWED_RECIPIENTS` 설정이 필요하며,
-허용 수신자는 예약 저장 시점과 발송 직전에 검사합니다.
+`SMTP_USER`, `SMTP_PASSWORD` 설정이 필요합니다.
+수신자 사전 등록은 필요 없으며, 이메일 주소 형식은 예약 저장 시점과 발송 직전에 검사합니다.
 
 실제 이메일 없이 검증: `python -m unittest discover -s tests -v`
 
