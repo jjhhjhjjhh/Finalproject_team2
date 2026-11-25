@@ -215,6 +215,8 @@ MATH_BLOCKED_ATTRS = {
 MATH_SANDBOX_PRELUDE = '''
 def _install_guard():
     import os, sys
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)  # 2026!처럼 4300자리가 넘는 정수도 str()·print() 가능
     allowed_read = tuple({os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path) if p})
     blocked = ("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
                "os.startfile", "os.remove", "os.unlink", "os.rename", "os.rmdir", "os.mkdir", "os.truncate",
@@ -1030,6 +1032,51 @@ def inspect_file_signature(file_path: str) -> str:
         return f"시그니처 분석 오류: {type(e).__name__}: {e}"
 
 import textwrap
+
+# 파싱 도구는 documents 파일을 열어야 해서 계산 도구보다 넓게 허용하되,
+# documents·임시 폴더 밖 파일(.env 등) 읽기·쓰기, 파일 삭제·이름 변경, 네트워크, 프로그램 실행은 막는다
+PARSER_SANDBOX_PRELUDE = '''
+def _install_guard():
+    import os, sys, tempfile
+    if hasattr(sys, "set_int_max_str_digits"):
+        sys.set_int_max_str_digits(0)
+    def norm(p):
+        return os.path.normcase(os.path.realpath(os.fsdecode(p)))
+    docs = norm(os.getcwd())
+    # documents 안의 json.py 같은 파일이 표준 모듈을 가리지 않게 현재 폴더를 import 경로에서 뺀다
+    sys.path[:] = [p for p in sys.path if p and norm(p) != docs]
+    writable = (docs, norm(tempfile.gettempdir()))
+    readable = writable + tuple({norm(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, *sys.path) if p})
+    blocked = ("socket.", "subprocess.", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.fork",
+               "os.startfile", "os.kill", "os.remove", "os.rmdir", "os.rename", "os.truncate", "os.chmod",
+               "os.link", "os.symlink", "shutil.rmtree", "urllib.", "webbrowser.")
+    def inside(path, roots):
+        return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
+    def guard(event, args):
+        if event.startswith(blocked):
+            raise PermissionError(f"파싱 도구에서 허용되지 않은 동작입니다: {event}")
+        if event == "open":
+            path, mode, flags = args
+            if isinstance(path, int):
+                return
+            writing = (mode and any(c in mode for c in "wax+")) or (flags or 0) & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)
+            if not inside(norm(path), writable if writing else readable):
+                raise PermissionError("파싱 도구는 documents 폴더 안의 파일만 열 수 있습니다.")
+        elif event == "sqlite3.connect":
+            database = args[0]
+            if isinstance(database, bytes):
+                database = database.decode()
+            database = str(database)
+            if database.startswith("file:"):
+                database = database[5:].split("?", 1)[0]
+            if database not in ("", ":memory:") and not inside(norm(database), writable):
+                raise PermissionError("파싱 도구는 documents 폴더 안의 DB만 열 수 있습니다.")
+    sys.addaudithook(guard)
+_install_guard()
+del _install_guard
+'''
+
+
 @mcp.tool()
 def run_file_parser_python(code: str) -> str:
     """
@@ -1048,7 +1095,7 @@ def run_file_parser_python(code: str) -> str:
 
     try:
         result = subprocess.run(
-            [sys.executable, "-c", clean_code],
+            [sys.executable, "-B", "-c", f"exec({PARSER_SANDBOX_PRELUDE!r})\n" + clean_code],
             capture_output=True,
             text=True,
             encoding="utf-8",

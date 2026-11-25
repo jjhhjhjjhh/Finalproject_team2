@@ -173,6 +173,8 @@ TA 컴퓨터에서 돌아가므로, 검색 결과 속 지시(프롬프트 인젝
 | `schedule_email` | 날짜·시각과 시간대를 지정하여 이메일 예약 |
 | `list_scheduled_emails` | 예약 ID, 상태, 시각과 실패 이유 조회 |
 | `cancel_scheduled_email` | 아직 발송을 시작하지 않은 예약 취소 |
+| `open_webpage` | 사용자가 직접 요청할 때만 · localhost·사설 IP 등 내부 주소 차단 |
+| `run_file_parser_python` | documents·임시 폴더 밖 파일 읽기·쓰기 차단 · 파일 삭제·이름 변경, 네트워크, 프로그램 실행 차단 · API 키 없는 환경에서 60초 제한 |
 
 ### 이메일 예약 사용
 
@@ -198,7 +200,6 @@ SMTP는 기본적으로 Gmail의 587 포트와 STARTTLS를 사용합니다.
 허용 수신자는 예약 저장 시점과 발송 직전에 검사합니다.
 
 실제 이메일 없이 검증: `python -m unittest discover -s tests -v`
-| `open_webpage` | 사용자가 직접 요청할 때만 · localhost·사설 IP 등 내부 주소 차단 |
 
 ### 도구 추가
 
