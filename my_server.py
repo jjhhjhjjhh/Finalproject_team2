@@ -288,7 +288,11 @@ def run_math_python(code: str) -> str:
 
     problem = check_math_code(code)
     if problem:
-        return f"Python 실행 거부\n{problem}\n계산 모듈(math, fractions, sympy 등)만 써서 다시 작성하세요."
+        return (
+            f"Python 실행 거부\n{problem}\n"
+            "이 작업이 문자열 처리, Base64/Hex 인코딩·디코딩, 파일 파싱이라면 "
+            "run_math_python을 다시 쓰지 말고 즉시 run_file_parser_python 도구를 호출하세요."
+        )
 
     # API 키 등 환경변수를 넘기지 않고, 프로젝트 밖 임시 폴더에서 실행한다
     env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
@@ -304,7 +308,6 @@ def run_math_python(code: str) -> str:
                     "-c",
                     f"exec({MATH_SANDBOX_PRELUDE!r})\n" + code  # 오류 줄 번호가 거의 그대로 보이게 한 줄로 실행
                 ],
-                stdin=subprocess.DEVNULL,  # Windows MCP 서버에서 stdin을 물려받으면 자식 프로세스가 멈춘다
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -972,6 +975,105 @@ def google_lens_search(image_path: str) -> str:
                 break
             cause = cause.__cause__ or cause.__context__
         return f"오류: SerpApi {stage} 요청 실패 ({', '.join(details)})."
+
+@mcp.tool()
+def inspect_file_signature(file_path: str) -> str:
+    """
+    documents 폴더에 있는 알 수 없는 확장자(.dat, .bin 등) 파일의 시그니처(매직 넘버)와
+    헤더·푸터 바이트를 분석해 실제 파일 포맷(SQLite, Parquet, ZIP 등)을 판별한다.
+    """
+    try:
+        DOCUMENT_DIR.mkdir(parents=True, exist_ok=True)
+        relative = file_path.replace("\\", "/").removeprefix("./").removeprefix("documents/")
+        path = (DOCUMENT_DIR / relative).resolve()
+
+        if not path.is_relative_to(DOCUMENT_DIR.resolve()):
+            return "오류: documents 폴더 외부의 파일은 분석할 수 없습니다."
+        if not path.is_file():
+            return f"오류: 파일을 찾을 수 없습니다: {file_path}"
+
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            head = f.read(64)
+            f.seek(max(0, size - 32))
+            tail = f.read(32)
+
+        fmt = "알 수 없는 바이너리 포맷"
+        if head.startswith(b"SQLite format 3\x00"):
+            fmt = "SQLite 3 데이터베이스 (.sqlite / .db)"
+        elif head.startswith(b"PAR1"):
+            fmt = "Apache Parquet 파일 (.parquet)"
+        elif head.startswith(b"PK\x03\x04"):
+            fmt = "ZIP 압축 아카이브 (.zip / .xlsx / .docx)"
+        elif head.startswith(b"\x89HDF\r\n\x1a\n"):
+            fmt = "HDF5 데이터 파일 (.h5)"
+
+        head_hex = " ".join(f"{b:02X}" for b in head)
+        head_ascii = "".join(chr(b) if 32 <= b < 127 else "." for b in head)
+        tail_ascii = "".join(chr(b) if 32 <= b < 127 else "." for b in tail)
+
+        return (
+            f"[파일 시그니처 분석 결과]\n"
+            f"- 대상 파일: {path.name}\n"
+            f"- 파일 크기: {size:,} bytes\n"
+            f"- 추정 포맷: {fmt}\n"
+            f"- 헤더(앞 64B) Hex: {head_hex}\n"
+            f"- 헤더 ASCII: {head_ascii}\n"
+            f"- 푸터(뒤 32B) ASCII: {tail_ascii}"
+        )
+    except Exception as e:
+        return f"시그니처 분석 오류: {type(e).__name__}: {e}"
+
+import textwrap
+@mcp.tool()
+def run_file_parser_python(code: str) -> str:
+    """
+    documents 폴더의 바이너리·데이터베이스(.dat, .sqlite, .db 등) 파일을 파싱하거나,
+    Base64·Hex 인코딩/디코딩 및 문자열 복호화를 수행하기 위해 작성한 Python 코드를 실행한다.
+    현재 작업 디렉터리(cwd)가 documents 폴더이므로 파일명만 바로 열면 된다.
+    결과는 반드시 print()로 출력해야 하며, bytes는 .decode('utf-8')로 변환해 출력한다.
+    """
+    if not code.strip():
+        return "오류: 실행할 Python 코드가 없습니다."
+
+    clean_code = textwrap.dedent(code).strip()
+    DOCUMENT_DIR.mkdir(parents=True, exist_ok=True)
+    env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+    env.update(PYTHONIOENCODING="utf-8")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", clean_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(DOCUMENT_DIR.resolve()),
+            env=env,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            partial_out = result.stdout.strip()
+            out_info = f"\n[실패 전까지 출력된 내용]\n{partial_out[:1500]}\n" if partial_out else ""
+            return (
+                f"파싱 코드 실행 실패\n"
+                f"{out_info}"
+                f"오류 내용:\n{result.stderr[:2500]}\n"
+                f"[안내] sqlite_sequence 같은 시스템 테이블에는 데이터 컬럼이 없습니다. "
+                f"모든 테이블에 WHERE 조건을 반복 실행하지 말고, 실제 데이터 테이블 1개만 지정해 조회하세요."
+            )
+
+        output = result.stdout.strip()
+        if not output:
+            return "코드가 실행되었지만 출력이 없습니다. 반드시 print()로 결과를 출력하세요."
+
+        return f"파싱 코드 실행 성공\n결과:\n{output[:MAX_OUTPUT_LENGTH]}"
+
+    except subprocess.TimeoutExpired:
+        return "오류: 실행 시간이 60초를 초과했습니다."
+    except Exception as e:
+        return f"실행 오류: {type(e).__name__}: {e}"
 
 
 if __name__ == "__main__":

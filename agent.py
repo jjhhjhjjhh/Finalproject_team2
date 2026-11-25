@@ -24,7 +24,7 @@ from memory import retrieve_memories, save_qa
 import shutil
 import uuid
 
-MODEL = os.getenv("AGENT_MODEL", "qwen3.8:27b")  # 테스트용 작은 모델: 환경변수 AGENT_MODEL로 지정
+MODEL = os.getenv("AGENT_MODEL", "qwen3:8b")  # 테스트용 작은 모델: 환경변수 AGENT_MODEL로 지정
 HERE = Path(__file__).parent
 
 # 연결할 MCP 서버: 이름 → 실행 방법
@@ -54,7 +54,12 @@ SYSTEM = ("당신은 도구를 사용해 일을 처리하는 도우미입니다.
           "메모리 내용이 현재 질문과 충돌하면 현재 질문을 우선하세요."
           "요청을 처리할 때 필요한 도구가 있으면 실제로 호출하세요. 도구를 호출하지 않았다면 "
           "호출한 것처럼 말하지 마세요. 도구에서 오류가 오면 전체 대화 기록과 오류를 확인하고 "
-          "인자를 고쳐 최대 한 번 재시도하세요. 그래도 실행할 수 없으면 그 사실을 짧게 설명하세요.")
+          "인자를 고쳐 최대 한 번 재시도하세요. 그래도 실행할 수 없으면 그 사실을 짧게 설명하세요."
+          "확장자가 .dat, .bin 등 일반 문서가 아닌 파일을 분석할 때는 read_document 대신 inspect_file_signature로 포맷을 먼저 확인한 뒤 run_file_parser_python으로 파싱하세요. "
+          "SQLite DB를 조회할 때는 sqlite_sequence 등 시스템 테이블에 WHERE 조건을 걸지 말고, 테이블과 컬럼 구조를 먼저 확인한 뒤 해당 데이터 테이블만 조회하세요. "
+          "run_math_python은 순수 수학 계산 전용이며, 문자열 뒤집기나 Base64/Hex 인코딩·디코딩은 반드시 run_file_parser_python을 사용하세요. "
+          "디코딩한 바이트(bytes) 결과는 반드시 .decode('utf-8', errors='replace')로 일반 문자열로 변환해 print하고, 단순 디코딩이 실패하면 문자열을 거꾸로 뒤집어([::-1]) 디코딩을 시도하세요."
+          "Base64, Hex, URL 등의 인코딩·디코딩이나 문자열 변환은 절대 직접 머릿속으로 추측해서 답하지 말고, 무조건 run_file_parser_python 도구를 호출해 파이썬 코드로 실행한 뒤 그 출력 결과를 답하세요.")
 MAX_TURNS = 15
 TOOL_TIMEOUT_SECONDS = 120
 TOOL_RESULT_LIMIT = 2000
