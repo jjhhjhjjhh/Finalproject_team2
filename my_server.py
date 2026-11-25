@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 from mcp.server.fastmcp import FastMCP
+from tool_runtime import isolated_tool
 
 import csv
 from pathlib import Path
@@ -56,6 +57,14 @@ MAX_OUTPUT_LENGTH = 30000
 TOOL_TIMEOUT_SECONDS = 120
 
 mcp = FastMCP("my-tools")
+TOOL_FUNCTIONS = {}
+
+
+def register_tool(function):
+    TOOL_FUNCTIONS[function.__name__] = function
+    isolated_tool(mcp, __file__)(function)
+    return function
+
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 
 
@@ -69,7 +78,7 @@ def open_with_default_app(path):
         subprocess.Popen(["xdg-open", str(path)])
 
 
-@mcp.tool()
+@register_tool
 def open_webpage(url: str) -> str:
     """웹페이지를 사용자의 브라우저에서 연다. 사용자가 브라우저로 열어 달라고 직접 요청했을 때만 사용한다.
     웹페이지 내용을 읽으려면 이 도구 대신 fetch를 사용한다. url은 http:// 또는 https://로 시작해야 한다."""
@@ -89,7 +98,7 @@ def open_webpage(url: str) -> str:
     return f"브라우저에서 열었습니다: {url}"
 
 
-@mcp.tool()
+@register_tool
 def search_wikipedia(query: str) -> str:
     """한국어 위키백과에서 검색어와 가장 가까운 문서를 찾아 제목과 요약을 돌려준다."""
     headers = {"User-Agent": "snu-seminar-mcp-lab/1.0"}
@@ -104,7 +113,7 @@ def search_wikipedia(query: str) -> str:
     return f"제목: {title}\n요약: {summary.get('extract', '')}"
 
 
-@mcp.tool()
+@register_tool
 def create_excel(filename: str, csv_text: str) -> str:
     """표를 엑셀 파일(.xlsx)로 저장하고 엑셀 프로그램으로 연다.
     csv_text는 쉼표로 구분한 표이며 첫 줄은 열 이름이다. 예: '요일,할 일\\n월,자료 조사\\n화,회의'"""
@@ -163,7 +172,7 @@ def _send_smtp(row) -> None:
         smtp.send_message(msg)
 
 
-@mcp.tool()
+@register_tool
 def send_email(to: str, subject: str, body: str, send_at: str = "", timezone_name: str = "Asia/Seoul") -> str:
     """사용자가 요청한 이메일을 발송한다. send_at이 비어 있으면 즉시 발송한다.
     예약 요청은 send_at에 YYYY-MM-DD HH:MM 또는 ISO 8601을 넣는다.
@@ -180,7 +189,7 @@ def send_email(to: str, subject: str, body: str, send_at: str = "", timezone_nam
         return f"이메일 전송에 실패했습니다: {exc}"
 
 
-@mcp.tool()
+@register_tool
 def current_datetime(timezone_name: str = "Asia/Seoul") -> str:
     """현재 날짜와 시각을 지정한 시간대 기준으로 알려준다. 예: Asia/Seoul"""
     try:
@@ -270,7 +279,7 @@ def check_math_code(code: str) -> str | None:
     return None
 
 
-@mcp.tool()
+@register_tool
 def run_math_python(code: str) -> str:
     """
     LLM이 작성한 Python 코드를 실행하고 결과를 반환한다.
@@ -346,7 +355,7 @@ def run_math_python(code: str) -> str:
     except Exception as e:
         return f"Python 실행 오류: {type(e).__name__}: {e}"
 
-@mcp.tool()
+@register_tool
 def web_search(query: str) -> str:
     """
     인터넷에서 웹 문서와 관련 이미지 URL을 검색한다.
@@ -435,7 +444,7 @@ def web_search(query: str) -> str:
     except ValueError:
         return "오류: 검색 결과를 JSON으로 해석하지 못했습니다."
 
-@mcp.tool()
+@register_tool
 def read_document(file_path: str) -> str:
     """
     다양한 형식의 문서를 자동으로 읽고 텍스트를 추출한다.
@@ -696,7 +705,7 @@ def validate_public_url(url: str) -> None:
             )
 
 
-@mcp.tool()
+@register_tool
 def download_document(url: str) -> str:
     """
     인터넷에서 문서를 다운로드하여 documents 폴더에 저장한다.
@@ -907,7 +916,7 @@ def request_lens_search(image_id: str, api_key: str) -> requests.Response:
                 raise
 
 
-@mcp.tool()
+@register_tool
 def google_lens_search(image_path: str) -> str:
     """
     첨부 이미지를 SerpApi에 업로드해 Google Lens의 일치·유사 이미지 출처를 찾는다.
@@ -983,7 +992,7 @@ def google_lens_search(image_path: str) -> str:
             cause = cause.__cause__ or cause.__context__
         return f"오류: SerpApi {stage} 요청 실패 ({', '.join(details)})."
 
-@mcp.tool()
+@register_tool
 def inspect_file_signature(file_path: str) -> str:
     """
     documents 폴더에 있는 알 수 없는 확장자(.dat, .bin 등) 파일의 시그니처(매직 넘버)와
@@ -1077,7 +1086,7 @@ del _install_guard
 '''
 
 
-@mcp.tool()
+@register_tool
 def run_file_parser_python(code: str) -> str:
     """
     documents 폴더의 바이너리·데이터베이스(.dat, .sqlite, .db 등) 파일을 파싱하거나,
@@ -1167,7 +1176,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-@mcp.tool()
+@register_tool
 def schedule_email(to: str, subject: str, body: str, send_at: str, timezone_name: str = 'Asia/Seoul') -> str:
     """Reserve an email. send_at: 'YYYY-MM-DD HH:MM' or ISO 8601; timezone_name: IANA timezone."""
     try:
@@ -1206,7 +1215,7 @@ def schedule_email(to: str, subject: str, body: str, send_at: str, timezone_name
             '주의: agent.py 대화 세션 또는 MCP 서버가 실행 중이어야 발송됩니다. 종료 중 지난 예약은 다음 실행 시 발송됩니다.')
 
 
-@mcp.tool()
+@register_tool
 def list_scheduled_emails(status: str = 'all', limit: int = 20) -> str:
     """List scheduled emails and their states: pending, sending, sent, failed, cancelled, all."""
     if status not in {'all', 'pending', 'sending', 'sent', 'failed', 'cancelled'}:
@@ -1226,7 +1235,7 @@ def list_scheduled_emails(status: str = 'all', limit: int = 20) -> str:
     return '\n'.join(output)
 
 
-@mcp.tool()
+@register_tool
 def cancel_scheduled_email(schedule_id: str) -> str:
     """Cancel a pending email by its reservation ID (cannot cancel sending/sent)."""
     with _connect() as conn:
@@ -1292,4 +1301,12 @@ def run_server():
 
 
 if __name__ == "__main__":
-    run_server()
+    if len(sys.argv) == 3 and sys.argv[1] == '--run-tool':
+        # Workers execute one registered function; never start the email scheduler.
+        function = TOOL_FUNCTIONS[sys.argv[2]]
+        arguments = json.loads(sys.stdin.buffer.read().decode('utf-8'))
+        result = function(**arguments)
+        sys.stdout.buffer.write(json.dumps(result, ensure_ascii=False).encode('utf-8'))
+        sys.stdout.buffer.flush()
+    else:
+        run_server()

@@ -24,6 +24,7 @@ from mcp.shared.exceptions import McpError
 from memory import retrieve_memories, save_qa
 import shutil
 import uuid
+from tool_runtime import MCP_CONNECTION_SECONDS, MCP_DISCOVERY_SECONDS, TOOL_RESPONSE_SECONDS, TIMEOUT_MARKER, deadline
 
 MODEL = os.getenv("AGENT_MODEL", "qwen3.8:27b")  # 환경변수 AGENT_MODEL로 지정
 HERE = Path(__file__).parent
@@ -57,14 +58,14 @@ SYSTEM = ("당신은 도구를 사용해 일을 처리하는 도우미입니다.
           "메모리 내용이 현재 질문과 충돌하면 현재 질문을 우선하세요."
           "요청을 처리할 때 필요한 도구가 있으면 실제로 호출하세요. 도구를 호출하지 않았다면 "
           "호출한 것처럼 말하지 마세요. 도구에서 오류가 오면 전체 대화 기록과 오류를 확인하고 "
-          "인자를 고쳐 최대 한 번 재시도하세요. 그래도 실행할 수 없으면 그 사실을 짧게 설명하세요."
+          "시간 초과가 아닌 오류는 인자를 고쳐 최대 한 번 재시도하세요. 시간 초과 뒤에는 새 실행 없이 recall_tool_result로 기존 기록만 확인하세요. 그래도 실행할 수 없으면 그 사실을 짧게 설명하세요."
           "확장자가 .dat, .bin 등 일반 문서가 아닌 파일을 분석할 때는 read_document 대신 inspect_file_signature로 포맷을 먼저 확인한 뒤 run_file_parser_python으로 파싱하세요. "
           "SQLite DB를 조회할 때는 sqlite_sequence 등 시스템 테이블에 WHERE 조건을 걸지 말고, 테이블과 컬럼 구조를 먼저 확인한 뒤 해당 데이터 테이블만 조회하세요. "
           "run_math_python은 순수 수학 계산 전용이며, 문자열 뒤집기나 Base64/Hex 인코딩·디코딩은 반드시 run_file_parser_python을 사용하세요. "
           "디코딩한 바이트(bytes) 결과는 반드시 .decode('utf-8', errors='replace')로 일반 문자열로 변환해 print하고, 단순 디코딩이 실패하면 문자열을 거꾸로 뒤집어([::-1]) 디코딩을 시도하세요."
           "Base64, Hex, URL 등의 인코딩·디코딩이나 문자열 변환은 절대 직접 머릿속으로 추측해서 답하지 말고, 무조건 run_file_parser_python 도구를 호출해 파이썬 코드로 실행한 뒤 그 출력 결과를 답하세요.")
 MAX_TURNS = 15
-TOOL_TIMEOUT_SECONDS = 120
+TOOL_TIMEOUT_SECONDS = TOOL_RESPONSE_SECONDS
 TOOL_RESULT_LIMIT = 2000
 RECENT_TOOL_TURNS = 2
 RECALL_TOOL = "recall_tool_result"
@@ -176,11 +177,27 @@ async def connect(stack):
     errlog = stack.enter_context(open(HERE / "mcp_servers.log", "a", encoding="utf-8"))
     tools = {}
     for server_name, params in SERVERS.items():
-        read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        for tool in (await session.list_tools()).tools:
-            tools[tool.name] = (server_name, session, tool)
+        # Keep context entry/exit in this task: AnyIO cancel scopes cannot cross tasks.
+        try:
+            async with deadline(MCP_CONNECTION_SECONDS):
+                read, write = await stack.enter_async_context(stdio_client(params, errlog=errlog))
+                session = await stack.enter_async_context(ClientSession(
+                    read, write, read_timeout_seconds=timedelta(seconds=MCP_DISCOVERY_SECONDS),
+                ))
+                await session.initialize()
+            async with deadline(MCP_DISCOVERY_SECONDS):
+                cursor = None
+                while True:
+                    page = await session.list_tools(cursor=cursor) if cursor else await session.list_tools()
+                    for tool in page.tools:
+                        if tool.name in tools or tool.name == RECALL_TOOL:
+                            raise ValueError(f"중복된 도구 이름: {tool.name} ({server_name})")
+                        tools[tool.name] = (server_name, session, tool)
+                    cursor = page.nextCursor
+                    if not cursor:
+                        break
+        except (TimeoutError, McpError) as exc:
+            raise RuntimeError(f"MCP 서버 연결/목록 조회 실패: {server_name} ({type(exc).__name__})") from exc
     return tools
 
 
@@ -341,7 +358,7 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
         finish_after_repeats = False
         reusable_results = {}
         for turn in range(1, MAX_TURNS + 1):
-            last = finish_after_timeout or finish_after_repeats or turn == MAX_TURNS
+            last = finish_after_repeats or turn == MAX_TURNS
             messages = base_messages.copy()
             if tool_memory.catalog:
                 messages.insert(-1, {"role": "user", "content": tool_memory.index()})
@@ -349,12 +366,14 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                 messages.extend(tool_turn)
             if last:
                 messages.append({"role": "user", "content": FINAL_ANSWER_PROMPT})
+            elif finish_after_timeout:
+                messages.append({"role": "user", "content": "도구 실행 시간이 초과되었습니다. 새 실행은 하지 말고 필요하면 recall_tool_result로 저장된 근거를 확인한 뒤 답하세요. 발송 등 작업의 성공 여부는 추측하지 마세요."})
 
             print(f"[MODEL] {MODEL} 응답 대기 중 ({turn}/{MAX_TURNS})", flush=True)
             response = ollama.chat(
                 model=MODEL,
                 messages=messages,
-                tools=None if last or not schemas else schemas,
+                tools=None if last or not schemas else ([RECALL_SCHEMA] if finish_after_timeout else schemas),
                 think=False,
                 options=MODEL_OPTIONS,
             )
@@ -416,15 +435,15 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                     f"{json.dumps(args, ensure_ascii=False)}"
                 )
 
-                if finish_after_timeout:
-                    text = "이전 도구 호출이 시간 초과되어 실행하지 않았습니다."
-                elif name == RECALL_TOOL:
+                if name == RECALL_TOOL:
                     try:
                         text = tool_memory.read(
                             args.get("result_id", ""), args.get("keyword", ""), args.get("offset", 0),
                         )
                     except OSError:
                         text = "오류: 저장된 도구 결과를 읽지 못했습니다."
+                elif finish_after_timeout:
+                    text = "이전 도구 호출이 시간 초과되어 실행하지 않았습니다."
                 elif name not in tools:
                     text = f"도구 실행 오류: 등록되지 않은 도구입니다: {name}"
                 elif name == "google_lens_search" and (
@@ -440,8 +459,10 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                         text = f"오류: 이전 결과 {result_id}를 읽지 못했습니다."
                 else:
                     try:
-                        result = await tools[name][1].call_tool(
-                            name, args, read_timeout_seconds=timedelta(seconds=TOOL_TIMEOUT_SECONDS),
+                        result = await asyncio.wait_for(
+                            tools[name][1].call_tool(
+                                name, args, read_timeout_seconds=timedelta(seconds=TOOL_TIMEOUT_SECONDS),
+                            ), timeout=TOOL_TIMEOUT_SECONDS,
                         )
                         text = "\n".join(
                             item.text
@@ -453,11 +474,11 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                         if is_error:
                             text = f"도구 실행 오류: {text}"
                         # 일부 로컬 도구는 자체 시간 초과를 텍스트 결과로 반환한다.
-                        # 계산 도구 시간 초과는 모델이 짠 코드 문제라 코드를 고쳐 다시 시도하게 둔다.
+                        # All timeout sources switch to local record lookup only.
                         first_line = text.partition("\n")[0]
-                        if name != "run_math_python" and first_line.startswith("오류:") and (
+                        if TIMEOUT_MARKER in first_line or (first_line.startswith("오류:") and (
                             "시간이 초과" in first_line or "초를 초과" in first_line
-                        ):
+                        )):
                             finish_after_timeout = True
                         if not text.strip():
                             text = "도구가 텍스트 결과를 반환하지 않았습니다."
@@ -468,10 +489,13 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                                 print("[TOOL MEMORY ERROR] 결과 원문을 임시 저장소에 기록하지 못했습니다.")
                             else:
                                 if name in REUSABLE_TOOLS.get(server_name, ()) and not is_error and not text.startswith((
-                                    "오류:", "웹 검색 오류:",
+                                    "오류:", "웹 검색 오류:", TIMEOUT_MARKER,
                                 )):
                                     reusable_results[cache_key] = result_id
                                 text = f"[{result_id}]\n{text}"
+                    except asyncio.TimeoutError:
+                        finish_after_timeout = True
+                        text = f"도구 응답 대기가 {TOOL_TIMEOUT_SECONDS}초를 초과했습니다. 실행 결과는 확인되지 않았습니다."
                     except McpError as exc:
                         if exc.error.code == 408:
                             finish_after_timeout = True
