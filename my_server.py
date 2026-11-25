@@ -304,6 +304,7 @@ def run_math_python(code: str) -> str:
                     "-c",
                     f"exec({MATH_SANDBOX_PRELUDE!r})\n" + code  # 오류 줄 번호가 거의 그대로 보이게 한 줄로 실행
                 ],
+                stdin=subprocess.DEVNULL,  # Windows MCP 서버에서 stdin을 물려받으면 자식 프로세스가 멈춘다
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
