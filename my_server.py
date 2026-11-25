@@ -1051,6 +1051,7 @@ def run_file_parser_python(code: str) -> str:
             errors="replace",
             cwd=str(DOCUMENT_DIR.resolve()),
             env=env,
+            stdin=subprocess.DEVNULL,  # Windows MCP 서버에서 stdin을 물려받으면 자식 프로세스가 멈춘다
             timeout=60,
         )
 

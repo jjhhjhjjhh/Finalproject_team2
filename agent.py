@@ -24,7 +24,7 @@ from memory import retrieve_memories, save_qa
 import shutil
 import uuid
 
-MODEL = os.getenv("AGENT_MODEL", "qwen3:8b")  # 테스트용 작은 모델: 환경변수 AGENT_MODEL로 지정
+MODEL = os.getenv("AGENT_MODEL", "qwen3.8:27b")  # 테스트용 작은 모델: 환경변수 AGENT_MODEL로 지정
 HERE = Path(__file__).parent
 
 # 연결할 MCP 서버: 이름 → 실행 방법
