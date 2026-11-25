@@ -69,6 +69,8 @@ TOOL_TIMEOUT_SECONDS = TOOL_RESPONSE_SECONDS
 TOOL_RESULT_LIMIT = 2000
 RECENT_TOOL_TURNS = 2
 RECALL_TOOL = "recall_tool_result"
+CODE_TOOLS = {"run_math_python", "run_file_parser_python"}
+CODE_TIMEOUT_RETRIES = 1  # 계산·파싱 도구 시간 초과 시 다시 시도 허용 횟수 (질문당)
 RECALL_SCHEMA = {
     "type": "function",
     "function": {
@@ -355,6 +357,7 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
         print(f"[QUESTION] {question}")
 
         finish_after_timeout = False
+        code_timeouts = 0
         finish_after_repeats = False
         reusable_results = {}
         for turn in range(1, MAX_TURNS + 1):
@@ -479,7 +482,14 @@ async def ask(question, image_path=None, *, image_paths=(), use_tools=True, use_
                         if TIMEOUT_MARKER in first_line or (first_line.startswith("오류:") and (
                             "시간이 초과" in first_line or "초를 초과" in first_line
                         )):
-                            finish_after_timeout = True
+                            # 계산·파싱 도구의 자체 시간 초과는 모델 코드가 비효율적인 경우라
+                            # 질문당 한 번은 코드를 고쳐 다시 시도하게 하고, 두 번째부터 차단한다.
+                            if name in CODE_TOOLS and TIMEOUT_MARKER not in first_line and code_timeouts < CODE_TIMEOUT_RETRIES:
+                                code_timeouts += 1
+                                text += ("\n코드가 시간 제한을 넘었습니다. 같은 코드를 반복하지 말고 공식, 동적 계획법 등 "
+                                         "더 효율적인 방법으로 고쳐 한 번만 다시 시도하세요. 다시 초과하면 도구를 더 쓸 수 없습니다.")
+                            else:
+                                finish_after_timeout = True
                         if not text.strip():
                             text = "도구가 텍스트 결과를 반환하지 않았습니다."
                         else:
