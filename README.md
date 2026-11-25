@@ -169,7 +169,35 @@ TA 컴퓨터에서 돌아가므로, 검색 결과 속 지시(프롬프트 인젝
 | 도구 | 제한 |
 |---|---|
 | `run_math_python` | 계산 모듈(math, fractions, numpy, sympy 등)만 import 가능 · 파일/네트워크/프로그램 실행 차단 · API 키 없는 환경, 임시 폴더에서 30초 제한 |
-| `send_email` | 본인(`SMTP_USER`)과 `.env`의 `EMAIL_ALLOWED_RECIPIENTS`(쉼표 구분)에 등록된 주소로만 전송 |
+| `send_email` | 본인(`SMTP_USER`)과 허용 수신자에게 즉시 발송 또는 `send_at`으로 예약 |
+| `schedule_email` | 날짜·시각과 시간대를 지정하여 이메일 예약 |
+| `list_scheduled_emails` | 예약 ID, 상태, 시각과 실패 이유 조회 |
+| `cancel_scheduled_email` | 아직 발송을 시작하지 않은 예약 취소 |
+
+### 이메일 예약 사용
+
+`python agent.py` 또는 `python agent.py "내일 오전 9시에 이메일을 보내 줘"`로 실행하면
+대화 세션이 유지됩니다. 수신자·제목·본문을 함께 알려 주세요. 종료는 `exit` 또는 `quit`입니다.
+이미지 질문도 답변 후 대화 세션을 유지합니다. Python에서 직접 호출하는 `ask()`는 기존처럼
+한 번만 실행되므로 예약을 계속 처리하려면 `chat()` 또는 상시 MCP 서버를 사용하세요.
+
+`send_email(to, subject, body)`는 즉시 발송하고,
+`send_email(to, subject, body, send_at="2027-01-02 09:00", timezone_name="Asia/Seoul")`은 예약합니다.
+`schedule_email`도 동일한 예약 저장 기능을 제공합니다. 별도 워커 파일을 실행할 필요가 없습니다.
+
+예약 데이터는 기본적으로 `data/scheduled_emails.sqlite3`에 저장됩니다.
+`SCHEDULED_EMAIL_DB`로 변경할 수 있으며 상대 경로는 프로젝트 폴더 기준입니다.
+서버는 시작 시와 이후 약 10초 간격으로 발송할 예약을 확인합니다.
+**대화 세션/MCP 서버를 종료하거나 PC가 꺼지거나 절전 상태이면 발송되지 않습니다.**
+종료 중 시각이 지난 `pending` 예약은 다음 서버 실행 때 발송됩니다.
+이미 발송을 시작한 `sending` 상태에서 강제 종료된 경우와 `failed` 상태는 자동 재시도하지 않습니다.
+중복 발송을 막기 위해 수신 여부를 확인한 뒤 새로 예약하세요.
+
+SMTP는 기본적으로 Gmail의 587 포트와 STARTTLS를 사용합니다.
+`SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_ALLOWED_RECIPIENTS` 설정이 필요하며,
+허용 수신자는 예약 저장 시점과 발송 직전에 검사합니다.
+
+실제 이메일 없이 검증: `python -m unittest discover -s tests -v`
 | `open_webpage` | 사용자가 직접 요청할 때만 · localhost·사설 IP 등 내부 주소 차단 |
 
 ### 도구 추가

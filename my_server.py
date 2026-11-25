@@ -22,8 +22,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from email.message import EmailMessage
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
+from contextlib import contextmanager
+import sqlite3
+import threading
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 from mcp.server.fastmcp import FastMCP
@@ -125,56 +128,57 @@ def create_excel(filename: str, csv_text: str) -> str:
         opened = f"파일은 저장했지만 열지 못했습니다 ({exc})"
     return f"{len(rows) - 1}행 표를 저장했습니다: outputs/{path.name} · {opened}"
 
-@mcp.tool()
-def send_email(to: str, subject: str, body: str) -> str:
-    """이메일을 지정한 수신자에게 보낸다. 사용자가 직접 요청했을 때만 사용한다.
-    수신자는 본인(SMTP_USER)과 .env의 EMAIL_ALLOWED_RECIPIENTS에 등록된 주소만 가능하다."""
+def _validate_email(to: str, subject: str, body: str) -> str:
     recipient = to.strip()
-
     if not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", recipient):
-        return "수신자에는 이메일 주소 하나를 입력하세요."
-    if "\r" in subject or "\n" in subject:
-        return "제목에 줄바꿈을 넣을 수 없습니다."
-
-    sender = os.getenv("SMTP_USER")
-    password = os.getenv("SMTP_PASSWORD")
-    host = "smtp.gmail.com"
-    port = 587
-
-    if not sender or not password:
-        return "SMTP_USER와 SMTP_PASSWORD 환경 변수를 먼저 설정하세요."
-
-    # 검색 결과 속 지시 등으로 엉뚱한 곳에 메일이 가지 않도록 허용된 수신자에게만 보낸다
-    allowed = {
-        address.strip().lower()
-        for address in os.getenv("EMAIL_ALLOWED_RECIPIENTS", "").split(",")
-        if address.strip()
-    }
-    allowed.add(sender.strip().lower())
+        raise ValueError("수신자 이메일 주소 하나를 정확히 입력하세요.")
+    if not subject.strip() or "\r" in subject or "\n" in subject:
+        raise ValueError("제목은 비어 있거나 줄바꿈을 포함할 수 없습니다.")
+    if not body.strip() or len(body) > 10000:
+        raise ValueError("본문은 1~10,000자로 입력하세요.")
+    sender = os.getenv("SMTP_USER", "").strip()
+    if not sender or not os.getenv("SMTP_PASSWORD"):
+        raise ValueError("SMTP_USER와 SMTP_PASSWORD를 설정하세요.")
+    allowed = {v.strip().lower() for v in os.getenv("EMAIL_ALLOWED_RECIPIENTS", "").split(",") if v.strip()}
+    allowed.add(sender.lower())
     if recipient.lower() not in allowed:
-        return ("허용되지 않은 수신자입니다. 보내려면 .env의 EMAIL_ALLOWED_RECIPIENTS에 "
-                "주소를 쉼표로 구분해 추가하세요.")
-    if len(body) > 10000:
-        return "본문이 너무 깁니다 (최대 10,000자)."
+        raise ValueError("허용되지 않은 수신자입니다. EMAIL_ALLOWED_RECIPIENTS를 확인하세요.")
+    return recipient
 
+
+def _send_smtp(row) -> None:
+    recipient = _validate_email(row['recipient'], row['subject'], row['body'])
+    sender = os.environ['SMTP_USER'].strip()
+    msg = EmailMessage()
+    msg['From'] = sender
+    msg['To'] = recipient
+    msg['Subject'] = row['subject']
+    msg.set_content(row['body'])
+    with smtplib.SMTP(os.getenv('SMTP_HOST', 'smtp.gmail.com'),
+                      int(os.getenv('SMTP_PORT', '587')), timeout=25) as smtp:
+        smtp.ehlo()
+        smtp.starttls(context=ssl.create_default_context())
+        smtp.ehlo()
+        smtp.login(sender, os.environ['SMTP_PASSWORD'])
+        smtp.send_message(msg)
+
+
+@mcp.tool()
+def send_email(to: str, subject: str, body: str, send_at: str = "", timezone_name: str = "Asia/Seoul") -> str:
+    """사용자가 요청한 이메일을 발송한다. send_at이 비어 있으면 즉시 발송한다.
+    예약 요청은 send_at에 YYYY-MM-DD HH:MM 또는 ISO 8601을 넣는다.
+    시간대 기본값은 Asia/Seoul. 예약 저장은 발송 완료가 아니다.
+    본인과 EMAIL_ALLOWED_RECIPIENTS에 등록된 수신자만 가능하다.
+    예약 발송에는 agent.py 대화 세션 또는 MCP 서버가 계속 실행 중이어야 한다.
+    """
+    if send_at:
+        return schedule_email(to, subject, body, send_at, timezone_name)
     try:
-        msg = EmailMessage()
-        msg["From"] = sender
-        msg["To"] = recipient
-        msg["Subject"] = subject
-        msg.set_content(body)
-
-        with smtplib.SMTP(host, port, timeout=TOOL_TIMEOUT_SECONDS) as server:
-            server.ehlo()
-            server.starttls(context=ssl.create_default_context())
-            server.ehlo()
-            server.login(sender, password)
-            server.send_message(msg)
-
-        return f"이메일을 보냈습니다: {recipient}"
-
+        _send_smtp({'recipient': to, 'subject': subject, 'body': body})
+        return f"이메일을 보냈습니다: {to.strip()}"
     except (ValueError, OSError, smtplib.SMTPException) as exc:
         return f"이메일 전송에 실패했습니다: {exc}"
+
 
 @mcp.tool()
 def current_datetime(timezone_name: str = "Asia/Seoul") -> str:
@@ -1078,5 +1082,167 @@ def run_file_parser_python(code: str) -> str:
         return f"실행 오류: {type(e).__name__}: {e}"
 
 
+PROJECT_DIR = Path(__file__).resolve().parent
+DB_PATH = Path(os.getenv('SCHEDULED_EMAIL_DB', str(PROJECT_DIR / 'data' / 'scheduled_emails.sqlite3')))
+if not DB_PATH.is_absolute():
+    DB_PATH = PROJECT_DIR / DB_PATH
+EMAIL_PATTERN = re.compile(r'^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$')
+
+
+@contextmanager
+def _connect():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH), timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA busy_timeout=15000')
+    conn.execute('''CREATE TABLE IF NOT EXISTS scheduled_emails (
+        id TEXT PRIMARY KEY,
+        recipient TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        send_at_utc TEXT NOT NULL,
+        timezone_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at_utc TEXT NOT NULL,
+        sent_at_utc TEXT,
+        last_error TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_scheduled_email_status_time ON scheduled_emails(status,send_at_utc)')
+    conn.commit()
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+@mcp.tool()
+def schedule_email(to: str, subject: str, body: str, send_at: str, timezone_name: str = 'Asia/Seoul') -> str:
+    """Reserve an email. send_at: 'YYYY-MM-DD HH:MM' or ISO 8601; timezone_name: IANA timezone."""
+    try:
+        to = _validate_email(to, subject, body)
+    except ValueError as exc:
+        return f"오류: {exc}"
+    if not EMAIL_PATTERN.fullmatch(to):
+        return '오류: 수신자 이메일 주소 하나를 정확히 입력하세요.'
+    if not subject.strip() or '\r' in subject or '\n' in subject:
+        return '오류: 제목은 비어 있거나 줄바꿈을 포함할 수 없습니다.'
+    if not body.strip():
+        return '오류: 본문이 비어 있습니다.'
+    try:
+        tz = ZoneInfo(timezone_name)
+        parsed = datetime.fromisoformat(send_at.strip().replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            local = parsed.replace(tzinfo=tz)
+            # Detect nonexistent local times at DST transitions.
+            if local.astimezone(timezone.utc).astimezone(tz).replace(fold=local.fold) != local:
+                return '오류: 해당 시간대에 존재하지 않는 현지 시각입니다.'
+        else:
+            local = parsed.astimezone(tz)
+        dt_utc = local.astimezone(timezone.utc)
+    except (ValueError, ZoneInfoNotFoundError, OverflowError) as exc:
+        return f'오류: 예약 시각 또는 시간대가 올바르지 않습니다: {exc}'
+    if dt_utc <= datetime.now(timezone.utc):
+        return '오류: 예약 시각은 현재보다 미래여야 합니다.'
+    job_id = uuid.uuid4().hex[:16]
+    with _connect() as conn:
+        conn.execute('''INSERT INTO scheduled_emails
+            (id,recipient,subject,body,send_at_utc,timezone_name,status,created_at_utc)
+            VALUES (?,?,?,?,?,?,?,?)''',
+            (job_id, to, subject, body, dt_utc.isoformat(timespec='seconds'), timezone_name, 'pending', _utc_now()))
+    return (f'이메일 예약 저장 완료 (아직 발송되지 않음)\n예약 ID: {job_id}\n'
+            f'수신자: {to}\n제목: {subject}\n발송 예정: {local:%Y-%m-%d %H:%M:%S} ({timezone_name})\n'
+            '주의: agent.py 대화 세션 또는 MCP 서버가 실행 중이어야 발송됩니다. 종료 중 지난 예약은 다음 실행 시 발송됩니다.')
+
+
+@mcp.tool()
+def list_scheduled_emails(status: str = 'all', limit: int = 20) -> str:
+    """List scheduled emails and their states: pending, sending, sent, failed, cancelled, all."""
+    if status not in {'all', 'pending', 'sending', 'sent', 'failed', 'cancelled'}:
+        return '오류: status는 all/pending/sending/sent/failed/cancelled 중 하나여야 합니다.'
+    limit = max(1, min(100, int(limit)))
+    with _connect() as conn:
+        if status == 'all':
+            rows = conn.execute('SELECT * FROM scheduled_emails ORDER BY created_at_utc DESC LIMIT ?', (limit,)).fetchall()
+        else:
+            rows = conn.execute('SELECT * FROM scheduled_emails WHERE status=? ORDER BY created_at_utc DESC LIMIT ?', (status,limit)).fetchall()
+    if not rows:
+        return '해당하는 예약 메일이 없습니다.'
+    output = []
+    for row in rows:
+        local = datetime.fromisoformat(row['send_at_utc']).astimezone(ZoneInfo(row['timezone_name']))
+        output.append(f"ID: {row['id']} | 상태: {row['status']} | 예약: {local:%Y-%m-%d %H:%M} ({row['timezone_name']}) | 받는 사람: {row['recipient']} | 제목: {row['subject']}" + (f" | 오류: {row['last_error'][:150]}" if row['last_error'] else ''))
+    return '\n'.join(output)
+
+
+@mcp.tool()
+def cancel_scheduled_email(schedule_id: str) -> str:
+    """Cancel a pending email by its reservation ID (cannot cancel sending/sent)."""
+    with _connect() as conn:
+        cur = conn.execute("UPDATE scheduled_emails SET status='cancelled' WHERE id=? AND status='pending'", (schedule_id.strip(),))
+        if cur.rowcount:
+            return f'예약 취소 완료: {schedule_id}'
+        row = conn.execute('SELECT status FROM scheduled_emails WHERE id=?', (schedule_id.strip(),)).fetchone()
+    return (f"예약 취소 불가: 현재 상태 {row['status']}" if row else '오류: 해당 예약 ID가 없습니다.')
+
+
+
+def send_due_emails() -> int:
+    """Atomically claim pending due jobs; avoid double-sending by competing workers.
+
+    A crashed worker may leave a job in 'sending' for manual review.
+    We deliberately do not auto-retry ambiguous SMTP failures to limit duplicates.
+    """
+    count = 0
+    while True:
+        with _connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute("""SELECT * FROM scheduled_emails
+                WHERE status='pending' AND send_at_utc<=?
+                ORDER BY send_at_utc LIMIT 1""", (_utc_now(),)).fetchone()
+            if row is None:
+                return count
+            cur = conn.execute("UPDATE scheduled_emails SET status='sending' WHERE id=? AND status='pending'", (row['id'],))
+            if cur.rowcount != 1:
+                continue
+        count += 1
+        try:
+            _send_smtp(row)
+        except Exception as exc:
+            err = f'{type(exc).__name__}: {exc}'[:1000]
+            with _connect() as conn:
+                conn.execute("UPDATE scheduled_emails SET status='failed',last_error=? WHERE id=? AND status='sending'", (err, row['id']))
+            print(f"[EMAIL FAILED] {row['id']} {err}", flush=True, file=sys.stderr)
+        else:
+            with _connect() as conn:
+                conn.execute("UPDATE scheduled_emails SET status='sent',sent_at_utc=? WHERE id=? AND status='sending'", (_utc_now(), row['id']))
+            print(f"[EMAIL SENT] {row['id']} to={row['recipient']}", flush=True, file=sys.stderr)
+
+
+
+def run_server():
+    stop = threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            try:
+                send_due_emails()
+            except Exception as exc:
+                print(f'[EMAIL POLL ERROR] {type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
+            stop.wait(10)
+
+    worker = threading.Thread(target=poll, name='scheduled-email', daemon=True)
+    worker.start()
+    try:
+        mcp.run()
+    finally:
+        stop.set()
+        worker.join()
+
+
 if __name__ == "__main__":
-    mcp.run()
+    run_server()
